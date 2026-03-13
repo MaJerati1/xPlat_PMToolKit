@@ -82,7 +82,7 @@ Three-tier LLM data isolation architecture:
 ```bash
 # Clone the repository
 git clone https://github.com/MaJerati1/xPlat_PMToolKit.git
-cd meeting-toolkit
+cd xPlat_PMToolKit
 
 # Start all services
 docker-compose up -d
