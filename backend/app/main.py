@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import before_meeting, transcript, after_meeting, health
+from app.api.routes import before_meeting, transcript, after_meeting, health, quick_analyze
 from app.core.config import settings
 
 
@@ -30,7 +30,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_URL],
+    allow_origins=[settings.FRONTEND_URL, "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -38,6 +38,7 @@ app.add_middleware(
 
 # Route registration
 app.include_router(health.router, tags=["Health"])
+app.include_router(quick_analyze.router, prefix="/api", tags=["Quick Analyze"])
 app.include_router(before_meeting.router, prefix="/api", tags=["Before Meeting"])
 app.include_router(transcript.router, prefix="/api", tags=["Transcript Ingestion"])
 app.include_router(after_meeting.router, prefix="/api", tags=["After Meeting"])

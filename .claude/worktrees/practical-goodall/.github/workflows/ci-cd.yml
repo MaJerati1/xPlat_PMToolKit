@@ -1,0 +1,190 @@
+name: Meeting Toolkit CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+
+jobs:
+  # ===== Backend Tests =====
+  backend-lint-test:
+    name: Backend - Lint & Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: meeting_toolkit_test
+          POSTGRES_USER: toolkit
+          POSTGRES_PASSWORD: toolkit_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Lint with Ruff
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Type check
+        run: |
+          pip install mypy
+          mypy app/ --ignore-missing-imports
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://toolkit:toolkit_test@localhost:5432/meeting_toolkit_test
+          REDIS_URL: redis://localhost:6379/0
+          APP_ENV: test
+        run: |
+          pytest tests/ -v --tb=short
+
+  # ===== Frontend Tests =====
+  frontend-lint-test:
+    name: Frontend - Lint & Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+        run: npm run build
+
+  # ===== Deploy to Staging =====
+  deploy-staging:
+    name: Deploy to Staging
+    needs: [backend-lint-test, frontend-lint-test]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCP
+        run: gcloud auth configure-docker
+
+      - name: Build and push backend image
+        run: |
+          docker build -t gcr.io/${{ secrets.GCP_PROJECT_ID }}/meeting-toolkit-api:${{ github.sha }} ./backend
+          docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/meeting-toolkit-api:${{ github.sha }}
+
+      - name: Deploy backend to Cloud Run (staging)
+        run: |
+          gcloud run deploy meeting-toolkit-api-staging \
+            --image gcr.io/${{ secrets.GCP_PROJECT_ID }}/meeting-toolkit-api:${{ github.sha }} \
+            --region us-central1 \
+            --platform managed \
+            --allow-unauthenticated \
+            --set-env-vars "APP_ENV=staging"
+
+  # ===== Deploy to Production =====
+  deploy-production:
+    name: Deploy to Production
+    needs: [backend-lint-test, frontend-lint-test]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production
+      url: https://meeting-toolkit.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCP
+        run: gcloud auth configure-docker
+
+      - name: Build and push backend image
+        run: |
+          docker build -t gcr.io/${{ secrets.GCP_PROJECT_ID }}/meeting-toolkit-api:${{ github.sha }} ./backend
+          docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/meeting-toolkit-api:${{ github.sha }}
+
+      - name: Deploy backend to Cloud Run (production)
+        run: |
+          gcloud run deploy meeting-toolkit-api \
+            --image gcr.io/${{ secrets.GCP_PROJECT_ID }}/meeting-toolkit-api:${{ github.sha }} \
+            --region us-central1 \
+            --platform managed \
+            --set-env-vars "APP_ENV=production"
+
+      - name: Notify Sentry of release
+        if: success()
+        run: |
+          curl -sL https://sentry.io/get-cli/ | bash
+          sentry-cli releases new ${{ github.sha }}
+          sentry-cli releases set-commits ${{ github.sha }} --auto
+          sentry-cli releases finalize ${{ github.sha }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: meeting-toolkit

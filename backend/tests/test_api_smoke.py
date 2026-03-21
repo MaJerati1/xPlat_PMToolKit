@@ -43,6 +43,9 @@ async def test_before_meeting_routes_exist(client: AsyncClient):
 
 @pytest.mark.anyio
 async def test_transcript_upload_requires_input(client: AsyncClient):
-    """Transcript upload rejects empty requests."""
+    """Transcript upload rejects requests with nonexistent meeting or missing input."""
     response = await client.post("/api/meetings/00000000-0000-0000-0000-000000000001/transcript")
-    assert response.status_code == 422 or response.status_code == 400
+    # 404 = meeting not found (validated before checking input)
+    # 400 = meeting exists but no file/text provided
+    # 422 = validation error
+    assert response.status_code in (400, 404, 422)

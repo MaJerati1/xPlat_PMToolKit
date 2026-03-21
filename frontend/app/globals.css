@@ -1,0 +1,47 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-ink-50 text-ink-900 antialiased;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-5 py-2.5 bg-ocean-600 text-white rounded-lg font-medium text-sm
+           hover:bg-ocean-700 active:scale-[0.98] transition-all duration-150
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-secondary {
+    @apply px-5 py-2.5 bg-ink-100 text-ink-800 rounded-lg font-medium text-sm
+           hover:bg-ink-200 active:scale-[0.98] transition-all duration-150
+           border border-ink-200;
+  }
+  .btn-danger {
+    @apply px-4 py-2 bg-ember-50 text-ember-700 rounded-lg font-medium text-sm
+           hover:bg-ember-100 active:scale-[0.98] transition-all duration-150
+           border border-ember-200;
+  }
+  .btn-success {
+    @apply px-4 py-2 bg-sage-50 text-sage-700 rounded-lg font-medium text-sm
+           hover:bg-sage-100 active:scale-[0.98] transition-all duration-150
+           border border-sage-200;
+  }
+  .card {
+    @apply bg-white rounded-xl border border-ink-200/60 shadow-sm;
+  }
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+  .badge-pending { @apply bg-ink-100 text-ink-600; }
+  .badge-high { @apply bg-ember-50 text-ember-700; }
+  .badge-medium { @apply bg-ocean-50 text-ocean-700; }
+  .badge-low { @apply bg-sage-50 text-sage-700; }
+  .badge-confirmed { @apply bg-sage-100 text-sage-800; }
+  .badge-completed { @apply bg-sage-100 text-sage-800; }
+  .badge-in_progress { @apply bg-ocean-100 text-ocean-800; }
+}

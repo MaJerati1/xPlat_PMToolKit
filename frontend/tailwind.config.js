@@ -1,0 +1,90 @@
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: [
+    './app/**/*.{js,ts,jsx,tsx,mdx}',
+    './components/**/*.{js,ts,jsx,tsx,mdx}',
+  ],
+  theme: {
+    extend: {
+      fontFamily: {
+        sans: ['DM Sans', 'system-ui', 'sans-serif'],
+        display: ['Instrument Serif', 'Georgia', 'serif'],
+        mono: ['JetBrains Mono', 'monospace'],
+      },
+      colors: {
+        ink: {
+          50: '#f8f7f4',
+          100: '#f0ede6',
+          200: '#ddd8cc',
+          300: '#c4bbab',
+          400: '#a89986',
+          500: '#947e6a',
+          600: '#876f5e',
+          700: '#705b4e',
+          800: '#5c4b44',
+          900: '#4c3f3a',
+          950: '#28211e',
+        },
+        ocean: {
+          50: '#eef8ff',
+          100: '#d9eeff',
+          200: '#bce2ff',
+          300: '#8ed0ff',
+          400: '#59b4ff',
+          500: '#3494ff',
+          600: '#1a73f5',
+          700: '#155ce1',
+          800: '#184bb6',
+          900: '#1a428f',
+          950: '#152a57',
+        },
+        sage: {
+          50: '#f2f7f2',
+          100: '#e0ece0',
+          200: '#c2d9c3',
+          300: '#99be9b',
+          400: '#6b9d6e',
+          500: '#4a8050',
+          600: '#38663d',
+          700: '#2d5132',
+          800: '#27422b',
+          900: '#213624',
+          950: '#0f1e13',
+        },
+        ember: {
+          50: '#fef4ee',
+          100: '#fde6d7',
+          200: '#fac9ae',
+          300: '#f6a47b',
+          400: '#f17546',
+          500: '#ee5422',
+          600: '#df3a18',
+          700: '#b92916',
+          800: '#932319',
+          900: '#772018',
+          950: '#400d0b',
+        },
+      },
+      animation: {
+        'fade-in': 'fadeIn 0.5s ease-out',
+        'slide-up': 'slideUp 0.5s ease-out',
+        'pulse-soft': 'pulseSoft 2s ease-in-out infinite',
+      },
+      keyframes: {
+        fadeIn: {
+          '0%': { opacity: '0' },
+          '100%': { opacity: '1' },
+        },
+        slideUp: {
+          '0%': { opacity: '0', transform: 'translateY(12px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        pulseSoft: {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0.6' },
+        },
+      },
+    },
+  },
+  plugins: [],
+};
