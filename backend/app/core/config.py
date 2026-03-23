@@ -1,10 +1,12 @@
 """Application configuration loaded from environment variables."""
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Application settings with environment variable loading."""
+
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
     # Application
     APP_ENV: str = "development"
@@ -51,9 +53,9 @@ class Settings(BaseSettings):
     SENTRY_DSN: str = ""
     SENTRY_ENVIRONMENT: str = "development"
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    # Setup Token (for settings API access)
+    SETUP_TOKEN: str = ""
+
 
 
 settings = Settings()

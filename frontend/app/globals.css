@@ -1,0 +1,63 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Source+Serif+4:ital,opsz,wght@0,8..60,300;0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #FAFAF8;
+  --bg-card: #FFFFFF;
+  --bg-elev: #F5F4F0;
+  --bg-hover: #EFEEEA;
+  --txt: #1D1B16;
+  --txt-sec: #6B6860;
+  --txt-tri: #9C9A93;
+  --txt-inv: #FFFFFF;
+  --bdr: #E8E6E1;
+  --acc: #E8622C;
+  --acc-hov: #D4551F;
+  --acc-soft: #FEF0E8;
+  --grn: #2D8544;
+  --grn-soft: #E8F5EC;
+  --blu: #2563EB;
+  --blu-soft: #EFF4FF;
+  --amb: #B45309;
+  --amb-soft: #FEF3C7;
+  --red: #DC2626;
+  --red-soft: #FEF2F2;
+}
+
+.dark {
+  --bg: #161615;
+  --bg-card: #1E1E1C;
+  --bg-elev: #252523;
+  --bg-hover: #2A2A27;
+  --txt: #F0EFEB;
+  --txt-sec: #9C9A93;
+  --txt-tri: #6B6860;
+  --txt-inv: #1D1B16;
+  --bdr: #333330;
+  --acc: #F08050;
+  --acc-hov: #E8622C;
+  --acc-soft: #2A2118;
+  --grn: #4ADE80;
+  --grn-soft: #14291D;
+  --blu: #60A5FA;
+  --blu-soft: #172237;
+  --amb: #FBBF24;
+  --amb-soft: #29220D;
+  --red: #F87171;
+  --red-soft: #2D1515;
+}
+
+body {
+  background: var(--bg);
+  color: var(--txt);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background-color: var(--acc-soft);
+  color: var(--acc);
+}

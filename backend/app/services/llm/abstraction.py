@@ -95,15 +95,28 @@ class ClaudeProvider(LLMProvider):
         elapsed = (time.monotonic() - start) * 1000
         data = response.json()
 
+        # Raise on API errors so the fallback chain catches it
+        if response.status_code != 200 or "error" in data:
+            error_msg = data.get("error", {}).get("message", f"HTTP {response.status_code}")
+            raise RuntimeError(f"Claude API error: {error_msg}")
+
         content = ""
         if "content" in data and data["content"]:
             content = data["content"][0].get("text", "")
+
+        if not content:
+            raise RuntimeError("Claude returned empty content")
 
         # Parse structured output if schema was provided
         structured = None
         if request.output_schema and content:
             try:
-                cleaned = content.strip().removeprefix("```json").removesuffix("```").strip()
+                cleaned = content.strip()
+                if cleaned.startswith("```"):
+                    cleaned = cleaned.removeprefix("```json").removeprefix("```")
+                    if cleaned.endswith("```"):
+                        cleaned = cleaned[:-3]
+                    cleaned = cleaned.strip()
                 structured = json.loads(cleaned)
             except json.JSONDecodeError:
                 pass  # Return raw content; caller can handle
@@ -128,7 +141,7 @@ class OpenAIProvider(LLMProvider):
         self.model = model
 
     async def process(self, request: LLMRequest) -> LLMResponse:
-        """Send request to OpenAI API with function_calling for structured output."""
+        """Send request to OpenAI API."""
         import httpx
         import time
 
@@ -136,12 +149,27 @@ class OpenAIProvider(LLMProvider):
 
         messages = [{"role": "user", "content": f"{request.prompt}\n\n--- TRANSCRIPT ---\n{request.transcript_data}\n--- END TRANSCRIPT ---"}]
 
+        # Detect model family for parameter compatibility
+        is_reasoning = any(x in self.model for x in ["o1", "o3", "o4"])
+        is_modern = is_reasoning or "gpt-4o" in self.model
+
         payload = {
             "model": self.model,
-            "max_tokens": request.max_tokens,
             "messages": messages,
-            "temperature": request.temperature,
         }
+
+        # o-series reasoning models don't support temperature
+        if not is_reasoning:
+            payload["temperature"] = request.temperature
+
+        # Modern models use max_completion_tokens
+        if is_modern:
+            payload["max_completion_tokens"] = request.max_tokens
+        else:
+            payload["max_tokens"] = request.max_tokens
+
+        # Longer timeout for large transcripts
+        timeout = 180.0 if len(request.transcript_data) > 10000 else 120.0
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -151,18 +179,32 @@ class OpenAIProvider(LLMProvider):
                     "Content-Type": "application/json",
                 },
                 json=payload,
-                timeout=120.0,
+                timeout=timeout,
             )
 
         elapsed = (time.monotonic() - start) * 1000
         data = response.json()
 
+        # Raise on API errors so the fallback chain catches it
+        if response.status_code != 200 or "error" in data:
+            error_msg = data.get("error", {}).get("message", f"HTTP {response.status_code}")
+            raise RuntimeError(f"OpenAI API error: {error_msg}")
+
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        if not content:
+            raise RuntimeError("OpenAI returned empty content")
 
         structured = None
         if request.output_schema and content:
             try:
-                cleaned = content.strip().removeprefix("```json").removesuffix("```").strip()
+                cleaned = content.strip()
+                # Remove markdown code fences if present
+                if cleaned.startswith("```"):
+                    cleaned = cleaned.removeprefix("```json").removeprefix("```")
+                    if cleaned.endswith("```"):
+                        cleaned = cleaned[:-3]
+                    cleaned = cleaned.strip()
                 structured = json.loads(cleaned)
             except json.JSONDecodeError:
                 pass
@@ -299,18 +341,39 @@ class LLMService:
         self._initialize_providers()
 
     def _initialize_providers(self):
-        """Set up available LLM providers based on configuration."""
-        if self.settings.ANTHROPIC_API_KEY:
+        """Set up available LLM providers based on configuration.
+
+        Validates API keys to filter out placeholders before creating providers.
+        If Anthropic is not available but OpenAI is, OpenAI becomes the tier 1 provider.
+        """
+        has_real_anthropic = (
+            self.settings.ANTHROPIC_API_KEY
+            and self.settings.ANTHROPIC_API_KEY.startswith("sk-ant-")
+            and "your-key" not in self.settings.ANTHROPIC_API_KEY
+            and len(self.settings.ANTHROPIC_API_KEY) > 20
+        )
+        has_real_openai = (
+            self.settings.OPENAI_API_KEY
+            and self.settings.OPENAI_API_KEY.startswith("sk-")
+            and "your-key" not in self.settings.OPENAI_API_KEY
+            and len(self.settings.OPENAI_API_KEY) > 20
+        )
+
+        if has_real_anthropic:
             self._providers[1] = ClaudeProvider(
                 api_key=self.settings.ANTHROPIC_API_KEY,
                 model=self.settings.LLM_PRIMARY_MODEL,
             )
 
-        if self.settings.OPENAI_API_KEY:
-            self._budget_provider = OpenAIProvider(
+        if has_real_openai:
+            openai_provider = OpenAIProvider(
                 api_key=self.settings.OPENAI_API_KEY,
                 model=self.settings.LLM_BUDGET_MODEL,
             )
+            self._budget_provider = openai_provider
+            # If no Anthropic provider, promote OpenAI to tier 1
+            if 1 not in self._providers:
+                self._providers[1] = openai_provider
 
         self._providers[3] = OllamaProvider(
             base_url=self.settings.OLLAMA_BASE_URL,
