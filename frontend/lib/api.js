@@ -7,8 +7,36 @@
 
 const API_BASE = typeof window !== 'undefined' ? '' : (process.env.NEXT_PUBLIC_API_URL || 'http://backend:8000');
 
+// Direct backend URL for long-running requests (bypasses Next.js proxy timeout)
+// Falls back to relative URL if not configured (will use proxy)
+const BACKEND_DIRECT = typeof window !== 'undefined'
+  ? (process.env.NEXT_PUBLIC_BACKEND_DIRECT || 'http://localhost:8000')
+  : 'http://backend:8000';
+
 async function request(path, options = {}) {
   const url = `${API_BASE}${path}`;
+  const { headers: optHeaders, ...restOptions } = options;
+  const res = await fetch(url, {
+    ...restOptions,
+    headers: { 'Content-Type': 'application/json', ...optHeaders },
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    const detail = errorData.detail;
+    const msg = typeof detail === 'string' ? detail
+      : Array.isArray(detail) ? detail.map(d => d.msg || JSON.stringify(d)).join('; ')
+      : `API error: ${res.status}`;
+    throw new Error(msg);
+  }
+
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+// Direct request to backend — bypasses Next.js proxy for long-running calls
+async function directRequest(path, options = {}) {
+  const url = `${BACKEND_DIRECT}${path}`;
   const { headers: optHeaders, ...restOptions } = options;
   const res = await fetch(url, {
     ...restOptions,
@@ -73,8 +101,8 @@ export const api = {
       throw new Error(typeof err.detail === 'string' ? err.detail : `Upload failed: ${uploadRes.status}`);
     }
 
-    // Step 3: Analyze
-    const analysis = await request(`/api/meetings/${meeting.id}/analyze`, {
+    // Step 3: Analyze (direct to backend — bypasses proxy timeout)
+    const analysis = await directRequest(`/api/meetings/${meeting.id}/analyze`, {
       method: 'POST',
       body: JSON.stringify({ reanalyze: false }),
     });
@@ -100,17 +128,17 @@ export const api = {
     };
   },
 
-  // Analysis
+  // Analysis (direct to backend — bypasses proxy timeout for long LLM calls)
   analyzeTranscript: (meetingId, reanalyze = false) =>
-    request(`/api/meetings/${meetingId}/analyze`, {
+    directRequest(`/api/meetings/${meetingId}/analyze`, {
       method: 'POST',
       body: JSON.stringify({ reanalyze }),
     }),
   getSummary: (meetingId) => request(`/api/meetings/${meetingId}/summary`),
 
-  // Quick Analyze
+  // Quick Analyze (direct — LLM call can take 60+ seconds)
   quickAnalyze: (text, title, formatHint) =>
-    request('/api/quick-analyze', {
+    directRequest('/api/quick-analyze', {
       method: 'POST',
       body: JSON.stringify({ text, title, format_hint: formatHint || undefined }),
     }),

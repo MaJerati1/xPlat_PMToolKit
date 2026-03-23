@@ -37,28 +37,90 @@ router = APIRouter()
 # LLM ANALYSIS
 # ============================================
 
-@router.post("/meetings/{meeting_id}/analyze", response_model=AnalysisResponse)
+@router.post("/meetings/{meeting_id}/analyze")
 async def analyze_transcript(
     meeting_id: UUID,
     request: AnalysisRequest = AnalysisRequest(),
     db: AsyncSession = Depends(get_db),
 ):
     """Trigger full LLM analysis of the uploaded transcript."""
+    import logging
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.responses import JSONResponse
+    logger = logging.getLogger(__name__)
+
     try:
         service = AnalysisService(db)
         result = await service.analyze_meeting(meeting_id, reanalyze=request.reanalyze)
     except Exception as e:
+        logger.error(f"Analysis exception: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
     if result.status == "meeting_not_found":
         raise HTTPException(status_code=404, detail="Meeting not found")
     if result.status == "no_transcript":
-        raise HTTPException(
-            status_code=409,
-            detail="No transcript found for this meeting. Upload a transcript first."
-        )
+        raise HTTPException(status_code=409, detail="No transcript found. Upload a transcript first.")
 
-    return result
+    # Serialize with multiple fallback strategies
+    try:
+        data = jsonable_encoder(result)
+        return JSONResponse(content=data)
+    except Exception as e1:
+        logger.error(f"jsonable_encoder failed: {e1}", exc_info=True)
+        try:
+            data = result.model_dump(mode="json")
+            return JSONResponse(content=data)
+        except Exception as e2:
+            logger.error(f"model_dump also failed: {e2}", exc_info=True)
+            # Manual fallback — guaranteed to work
+            summary_data = None
+            if result.summary:
+                try:
+                    summary_data = {
+                        "id": str(result.summary.id),
+                        "meeting_id": str(result.summary.meeting_id),
+                        "summary_text": result.summary.summary_text,
+                        "decisions": result.summary.decisions,
+                        "topics": result.summary.topics,
+                        "speakers": result.summary.speakers,
+                        "llm_provider": result.summary.llm_provider,
+                        "llm_model": result.summary.llm_model,
+                        "llm_tier": result.summary.llm_tier,
+                        "generated_at": str(result.summary.generated_at) if result.summary.generated_at else None,
+                    }
+                except Exception:
+                    summary_data = {"summary_text": "Analysis completed but summary serialization failed."}
+
+            action_data = []
+            for ai in result.action_items:
+                try:
+                    action_data.append(jsonable_encoder(ai))
+                except Exception:
+                    try:
+                        action_data.append({
+                            "id": str(ai.id),
+                            "meeting_id": str(ai.meeting_id),
+                            "task": ai.task,
+                            "owner_name": ai.owner_name,
+                            "priority": ai.priority,
+                            "status": ai.status,
+                            "confirmed": ai.confirmed,
+                            "source_quote": ai.source_quote,
+                            "created_at": str(ai.created_at) if ai.created_at else None,
+                            "updated_at": str(ai.updated_at) if ai.updated_at else None,
+                        })
+                    except Exception:
+                        pass
+
+            return JSONResponse(content={
+                "meeting_id": str(meeting_id),
+                "status": "completed",
+                "summary": summary_data,
+                "action_items": action_data,
+                "llm_provider": result.llm_provider,
+                "llm_model": result.llm_model,
+                "llm_tier": result.llm_tier,
+            })
 
 
 # ============================================

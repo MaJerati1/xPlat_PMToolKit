@@ -27,9 +27,10 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434"
 
     # Model Selection
-    LLM_PRIMARY_MODEL: str = "claude-sonnet-4-20250514"
+    LLM_PRIMARY_MODEL: str = "claude-sonnet-4-6"
     LLM_BUDGET_MODEL: str = "gpt-4o-mini"
     LLM_SELFHOSTED_MODEL: str = "llama3.3:70b"
+    LLM_PREFERRED_PROVIDER: str = "anthropic"  # "anthropic", "openai", or "ollama"
 
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""

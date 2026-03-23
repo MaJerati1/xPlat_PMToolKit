@@ -36,6 +36,7 @@ ALLOWED_KEYS = {
     "APP_SECRET_KEY",
     "LLM_PRIMARY_MODEL",
     "LLM_BUDGET_MODEL",
+    "LLM_PREFERRED_PROVIDER",
 }
 
 
@@ -88,6 +89,7 @@ class SettingsUpdate(BaseModel):
     APP_SECRET_KEY: Optional[str] = Field(None, description="Application secret key")
     LLM_PRIMARY_MODEL: Optional[str] = Field(None, description="Primary LLM model (Anthropic)")
     LLM_BUDGET_MODEL: Optional[str] = Field(None, description="Budget LLM model (OpenAI)")
+    LLM_PREFERRED_PROVIDER: Optional[str] = Field(None, description="Preferred provider: anthropic, openai, or ollama")
 
 
 class SettingsUpdateResponse(BaseModel):

@@ -344,7 +344,8 @@ class LLMService:
         """Set up available LLM providers based on configuration.
 
         Validates API keys to filter out placeholders before creating providers.
-        If Anthropic is not available but OpenAI is, OpenAI becomes the tier 1 provider.
+        Uses LLM_PREFERRED_PROVIDER to determine which provider is primary.
+        The other configured provider becomes the fallback.
         """
         has_real_anthropic = (
             self.settings.ANTHROPIC_API_KEY
@@ -359,8 +360,11 @@ class LLMService:
             and len(self.settings.OPENAI_API_KEY) > 20
         )
 
+        anthropic_provider = None
+        openai_provider = None
+
         if has_real_anthropic:
-            self._providers[1] = ClaudeProvider(
+            anthropic_provider = ClaudeProvider(
                 api_key=self.settings.ANTHROPIC_API_KEY,
                 model=self.settings.LLM_PRIMARY_MODEL,
             )
@@ -370,10 +374,26 @@ class LLMService:
                 api_key=self.settings.OPENAI_API_KEY,
                 model=self.settings.LLM_BUDGET_MODEL,
             )
-            self._budget_provider = openai_provider
-            # If no Anthropic provider, promote OpenAI to tier 1
-            if 1 not in self._providers:
-                self._providers[1] = openai_provider
+
+        # Determine primary and fallback based on preference
+        preferred = getattr(self.settings, 'LLM_PREFERRED_PROVIDER', 'anthropic').lower()
+
+        if preferred == "openai" and openai_provider:
+            self._providers[1] = openai_provider
+            self._fallback_provider = anthropic_provider
+        elif preferred == "ollama":
+            # Ollama as primary, cloud providers as fallback
+            self._fallback_provider = anthropic_provider or openai_provider
+        elif anthropic_provider:
+            # Default: Anthropic primary
+            self._providers[1] = anthropic_provider
+            self._fallback_provider = openai_provider
+        elif openai_provider:
+            # Only OpenAI available
+            self._providers[1] = openai_provider
+            self._fallback_provider = None
+        else:
+            self._fallback_provider = None
 
         self._providers[3] = OllamaProvider(
             base_url=self.settings.OLLAMA_BASE_URL,
@@ -414,9 +434,9 @@ class LLMService:
         try:
             response = await provider.process(request)
         except Exception as e:
-            # Fallback to budget provider on primary failure
-            if hasattr(self, "_budget_provider"):
-                response = await self._budget_provider.process(request)
+            # Fallback to secondary provider on primary failure
+            if hasattr(self, "_fallback_provider") and self._fallback_provider:
+                response = await self._fallback_provider.process(request)
             else:
                 raise
 

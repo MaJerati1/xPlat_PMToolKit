@@ -34,7 +34,7 @@ export default function SetupPage() {
   const [tokenInput, setTokenInput] = useState('');
   const [generating, setGenerating] = useState(false);
 
-  const [keys, setKeys] = useState({ ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '', GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', OLLAMA_BASE_URL: '', LLM_PRIMARY_MODEL: '', LLM_BUDGET_MODEL: '' });
+  const [keys, setKeys] = useState({ ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '', GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', OLLAMA_BASE_URL: '', LLM_PRIMARY_MODEL: '', LLM_BUDGET_MODEL: '', LLM_PREFERRED_PROVIDER: '' });
   const [statuses, setStatuses] = useState({});
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -77,10 +77,30 @@ export default function SetupPage() {
   };
 
   // Enter existing token (returning user)
-  const handleAuth = () => {
-    if (tokenInput.trim()) {
+  const [authError, setAuthError] = useState(null);
+  const [authLoading, setAuthLoading] = useState(false);
+
+  const handleAuth = async () => {
+    if (!tokenInput.trim()) return;
+    setAuthLoading(true);
+    setAuthError(null);
+    try {
+      // Validate the token by making a real API call that requires auth
+      await api.getSettingsStatus(tokenInput.trim());
+      // If we get here, the token is valid
       setAuthToken(tokenInput.trim());
       setSetupStep('configure');
+    } catch (e) {
+      const msg = typeof e === 'string' ? e : (e?.message || '');
+      if (msg.includes('403') || msg.includes('Invalid')) {
+        setAuthError('Invalid setup token. Please check and try again.');
+      } else if (msg.includes('401')) {
+        setAuthError('Setup token required.');
+      } else {
+        setAuthError(msg || 'Failed to verify token. Is the backend running?');
+      }
+    } finally {
+      setAuthLoading(false);
     }
   };
 
@@ -199,14 +219,20 @@ export default function SetupPage() {
           <p className="text-sm text-txtsec mb-7 leading-relaxed">Enter your setup token to access settings.</p>
           <div className="flex gap-2">
             <input type="password" value={tokenInput} onChange={e => setTokenInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleAuth()}
+              onKeyDown={e => e.key === 'Enter' && !authLoading && handleAuth()}
               placeholder="Enter setup token..."
-              className="flex-1 px-3.5 py-2.5 bg-bgcard border border-bdr rounded-lg font-mono text-sm text-txt placeholder:text-txttri focus:outline-none focus:ring-2 focus:ring-acc/20 focus:border-acc" />
-            <button onClick={handleAuth} disabled={!tokenInput.trim()}
-              className="px-5 py-2.5 bg-acc text-white rounded-lg font-semibold text-sm disabled:opacity-50 hover:bg-acchov transition-all">
-              Continue
+              disabled={authLoading}
+              className="flex-1 px-3.5 py-2.5 bg-bgcard border border-bdr rounded-lg font-mono text-sm text-txt placeholder:text-txttri focus:outline-none focus:ring-2 focus:ring-acc/20 focus:border-acc disabled:opacity-50" />
+            <button onClick={handleAuth} disabled={!tokenInput.trim() || authLoading}
+              className="px-5 py-2.5 bg-acc text-white rounded-lg font-semibold text-sm disabled:opacity-50 hover:bg-acchov transition-all inline-flex items-center gap-2">
+              {authLoading ? <><Loader2 className="w-4 h-4 animate-spin" /> Verifying...</> : 'Continue'}
             </button>
           </div>
+          {authError && (
+            <div className="mt-4 p-3 bg-redsoft border border-red/20 rounded-lg text-sm text-red text-left">
+              {authError}
+            </div>
+          )}
         </div>
       </>
     );
@@ -235,16 +261,38 @@ export default function SetupPage() {
         {/* Model Selection */}
         <div className="bg-bgcard rounded-xl border border-bdr shadow-sm p-6 mb-4">
           <h3 className="text-sm font-semibold text-txt flex items-center gap-2 mb-1"><Cpu className="w-4 h-4 text-amb" /> Model Selection</h3>
-          <p className="text-xs text-txttri mb-5">Choose which models to use for analysis. Higher-tier models produce better results but cost more.</p>
+          <p className="text-xs text-txttri mb-5">Choose which AI provider and model to use. Only one provider is called per analysis — the other serves as a fallback if the primary fails.</p>
           <div className="space-y-5">
             <div>
-              <label className="block text-sm font-semibold text-txt mb-1.5">Anthropic Model (Primary)</label>
+              <label className="block text-sm font-semibold text-txt mb-1.5">Preferred Provider</label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { k: 'anthropic', label: 'Anthropic (Claude)', desc: 'Best quality' },
+                  { k: 'openai', label: 'OpenAI (GPT)', desc: 'Cost-effective' },
+                  { k: 'ollama', label: 'Ollama (Local)', desc: 'Air-gapped' },
+                ].map(({ k, label, desc }) => (
+                  <button key={k} onClick={() => setKey('LLM_PREFERRED_PROVIDER', k)}
+                    className={`p-3 rounded-lg border text-left transition-all ${
+                      keys.LLM_PREFERRED_PROVIDER === k
+                        ? 'border-acc bg-accsoft ring-2 ring-acc/20'
+                        : 'border-bdr hover:border-txttri hover:bg-bghover'
+                    }`}>
+                    <p className={`text-sm font-semibold ${keys.LLM_PREFERRED_PROVIDER === k ? 'text-acc' : 'text-txt'}`}>{label}</p>
+                    <p className="text-xs text-txttri mt-0.5">{desc}</p>
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-txttri mt-2">Current: <span className="font-mono text-txtsec">{keys.LLM_PREFERRED_PROVIDER || 'anthropic (default)'}</span>. Each analysis uses only the selected provider. The other is a fallback if the primary fails.</p>
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-txt mb-1.5">Anthropic Model</label>
               <select value={keys.LLM_PRIMARY_MODEL} onChange={e => setKey('LLM_PRIMARY_MODEL', e.target.value)}
                 className="w-full px-3.5 py-2.5 bg-bgcard border border-bdr rounded-lg text-sm text-txt focus:outline-none focus:ring-2 focus:ring-acc/20 focus:border-acc transition-all appearance-none cursor-pointer">
                 <option value="">Keep current setting</option>
-                <option value="claude-sonnet-4-20250514">Claude Sonnet 4 — Best balance of quality and speed</option>
-                <option value="claude-opus-4-20250514">Claude Opus 4 — Highest quality, slower</option>
-                <option value="claude-haiku-3-5-20241022">Claude Haiku 3.5 — Fast and cost-effective</option>
+                <option value="claude-sonnet-4-6">Claude Sonnet 4.6 — Best balance of quality and speed ($3/$15 per MTok)</option>
+                <option value="claude-opus-4-6">Claude Opus 4.6 — Most intelligent, best for complex analysis ($5/$25 per MTok)</option>
+                <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 — Fastest, cost-effective ($1/$5 per MTok)</option>
+                <option value="claude-sonnet-4-20250514">Claude Sonnet 4 (legacy)</option>
               </select>
               <p className="text-xs text-txttri mt-1">Used when Anthropic API key is configured. Current: <span className="font-mono text-txtsec">{keys.LLM_PRIMARY_MODEL || 'default'}</span></p>
             </div>
@@ -264,7 +312,7 @@ export default function SetupPage() {
           </div>
           <div className="mt-4 p-3 rounded-lg bg-ambsoft border border-amb/10">
             <p className="text-xs text-amb font-medium mb-1">Recommendation for long transcripts</p>
-            <p className="text-xs text-txtsec leading-relaxed">For meetings over 30 minutes, use <strong>GPT-4o</strong> or <strong>Claude Sonnet 4</strong> for the most thorough extraction of action items and topics. <strong>GPT-4o Mini</strong> works well for shorter meetings but may miss nuance in longer ones.</p>
+            <p className="text-xs text-txtsec leading-relaxed">For meetings over 30 minutes, use <strong>GPT-4o</strong> or <strong>Claude Sonnet 4.6</strong> for the most thorough extraction of action items and topics. <strong>Claude Opus 4.6</strong> gives the best results for complex multi-topic meetings. <strong>GPT-4o Mini</strong> and <strong>Claude Haiku 4.5</strong> work well for shorter meetings but may miss nuance in longer ones.</p>
           </div>
         </div>
 

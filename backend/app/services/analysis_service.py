@@ -101,106 +101,128 @@ class AnalysisService:
         # 3. Check for existing analysis
         existing_summary = await self._get_summary(meeting_id)
         if existing_summary and not reanalyze:
-            action_items = await self.get_action_items(meeting_id)
-            return self._build_response(
-                meeting_id, "completed", existing_summary, action_items
-            )
+            # Return existing analysis — but verify it's not corrupt
+            if existing_summary.summary_text:
+                action_items = await self.get_action_items(meeting_id)
+                return self._build_response(
+                    meeting_id, "completed", existing_summary, action_items
+                )
+            else:
+                # Corrupt/empty summary from a previous failed attempt — clean up and re-run
+                logger.warning(f"Found corrupt summary for meeting {meeting_id}, cleaning up")
+                reanalyze = True
 
-        # 4. Delete existing analysis if re-analyzing
-        if reanalyze and existing_summary:
-            await self.db.delete(existing_summary)
-            await self.db.execute(
-                delete(ActionItem).where(ActionItem.meeting_id == meeting_id)
-            )
-            await self.db.flush()
+        # 4. Delete existing analysis if re-analyzing or corrupt
+        if existing_summary:
+            try:
+                await self.db.delete(existing_summary)
+                await self.db.execute(
+                    delete(ActionItem).where(ActionItem.meeting_id == meeting_id)
+                )
+                await self.db.flush()
+                logger.info(f"Cleaned up existing summary for meeting {meeting_id}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up existing summary: {e}")
+                await self.db.rollback()
 
         # 5. Build transcript text for LLM
         transcript_text = self._format_transcript(transcript.segments)
+        logger.info(f"Formatted transcript: {len(transcript_text)} chars, {len(transcript.segments)} segments")
 
         # 6. Build prompt with optional agenda context
         agenda_titles = [ai.title for ai in meeting.agenda_items] if meeting.agenda_items else None
         prompt = build_analysis_prompt(agenda_titles)
 
-        # 7. Send to LLM (with automatic fallback to MockProvider)
-        # Scale max output tokens based on transcript length
+        # 7. Send to LLM
         transcript_len = len(transcript_text)
         max_output = 4000 if transcript_len < 5000 else 8000 if transcript_len < 20000 else 12000
+        logger.info(f"Sending to LLM: transcript={transcript_len} chars, max_output={max_output}")
 
         try:
             llm_request = LLMRequest(
                 prompt=f"{SYSTEM_ROLE}\n\n{prompt}",
                 transcript_data=transcript_text,
-                output_schema={"type": "object"},  # Signal structured output expected
+                output_schema={"type": "object"},
                 temperature=0.2,
                 max_tokens=max_output,
             )
             llm_response = await self._llm_service.process(llm_request)
-            logger.info(f"LLM response from {llm_response.provider}/{llm_response.model}, content length={len(llm_response.content)}")
+            logger.info(f"LLM OK: provider={llm_response.provider}, model={llm_response.model}, content_len={len(llm_response.content)}, in={llm_response.input_tokens}, out={llm_response.output_tokens}")
         except Exception as e:
             logger.warning(f"Primary LLM failed: {e}. Falling back to MockProvider.")
-            # Primary LLM failed — fall back to MockProvider
             try:
                 mock = MockProvider()
                 llm_response = await mock.process(llm_request)
                 logger.info("MockProvider fallback succeeded")
             except Exception as e2:
                 logger.error(f"MockProvider fallback also failed: {e2}")
-                return AnalysisResponse(
-                    meeting_id=meeting_id,
-                    status="failed",
-                )
+                return AnalysisResponse(meeting_id=meeting_id, status="failed")
 
         # 8. Parse LLM output
+        logger.info(f"Parsing: structured_data={'yes' if llm_response.structured_data else 'no'}")
         analysis_data = llm_response.structured_data
         if not analysis_data:
             try:
                 cleaned = llm_response.content.strip()
                 cleaned = cleaned.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
                 analysis_data = json.loads(cleaned)
-            except (json.JSONDecodeError, AttributeError):
-                return AnalysisResponse(
-                    meeting_id=meeting_id,
-                    status="failed",
-                )
+                logger.info(f"Parsed JSON keys: {list(analysis_data.keys()) if isinstance(analysis_data, dict) else type(analysis_data)}")
+            except (json.JSONDecodeError, AttributeError) as e:
+                logger.error(f"JSON parse failed: {e}. Preview: {llm_response.content[:500]}")
+                return AnalysisResponse(meeting_id=meeting_id, status="failed")
 
         # 9. Store summary
-        summary = MeetingSummary(
-            meeting_id=meeting_id,
-            summary_text=analysis_data.get("summary", ""),
-            decisions_json=analysis_data.get("decisions", []),
-            topics_json=analysis_data.get("topics", []),
-            speakers_json=analysis_data.get("speakers", []),
-            llm_provider=llm_response.provider,
-            llm_model=llm_response.model,
-            llm_tier=llm_response.tier,
-        )
-        self.db.add(summary)
-        await self.db.flush()
+        try:
+            summary = MeetingSummary(
+                meeting_id=meeting_id,
+                summary_text=analysis_data.get("summary", ""),
+                decisions_json=analysis_data.get("decisions", []),
+                topics_json=analysis_data.get("topics", []),
+                speakers_json=analysis_data.get("speakers", []),
+                llm_provider=llm_response.provider,
+                llm_model=llm_response.model,
+                llm_tier=llm_response.tier,
+            )
+            self.db.add(summary)
+            await self.db.flush()
+        except Exception as e:
+            logger.error(f"Failed to store summary: {e}")
+            await self.db.rollback()
+            return AnalysisResponse(meeting_id=meeting_id, status="failed")
 
         # 10. Store action items
         action_items_data = analysis_data.get("action_items", [])
         stored_items = []
         for item_data in action_items_data:
-            action_item = ActionItem(
-                meeting_id=meeting_id,
-                task=item_data.get("task", ""),
-                owner_name=item_data.get("owner"),
-                priority=item_data.get("priority", "medium"),
-                source_quote=item_data.get("source_quote"),
-                status="pending",
-                confirmed=False,
-            )
-            # Parse deadline if provided
-            deadline_str = item_data.get("deadline")
-            if deadline_str:
-                try:
-                    from datetime import date as date_type
-                    action_item.deadline = date_type.fromisoformat(deadline_str)
-                except (ValueError, TypeError):
-                    pass
+            try:
+                # Normalize priority to expected values
+                raw_priority = str(item_data.get("priority", "medium")).lower().strip()
+                if raw_priority not in ("high", "medium", "low"):
+                    raw_priority = "medium"
 
-            self.db.add(action_item)
-            stored_items.append(action_item)
+                action_item = ActionItem(
+                    meeting_id=meeting_id,
+                    task=item_data.get("task", "Untitled action item"),
+                    owner_name=item_data.get("owner") or item_data.get("owner_name"),
+                    priority=raw_priority,
+                    source_quote=item_data.get("source_quote"),
+                    status="pending",
+                    confirmed=False,
+                )
+                # Parse deadline if provided
+                deadline_str = item_data.get("deadline")
+                if deadline_str and isinstance(deadline_str, str):
+                    try:
+                        from datetime import date as date_type
+                        action_item.deadline = date_type.fromisoformat(deadline_str)
+                    except (ValueError, TypeError):
+                        pass
+
+                self.db.add(action_item)
+                stored_items.append(action_item)
+            except Exception as e:
+                logger.warning(f"Failed to store action item: {e}, data: {item_data}")
+                continue
 
         await self.db.flush()
         await self.db.refresh(summary)
@@ -321,24 +343,35 @@ class AnalysisService:
         """Build the API response from DB objects."""
         summary_resp = None
         if summary:
-            summary_resp = SummaryResponse(
-                id=summary.id,
-                meeting_id=summary.meeting_id,
-                summary_text=summary.summary_text,
-                decisions=summary.decisions_json or [],
-                topics=summary.topics_json or [],
-                speakers=summary.speakers_json or [],
-                llm_provider=summary.llm_provider,
-                llm_model=summary.llm_model,
-                llm_tier=summary.llm_tier,
-                generated_at=summary.generated_at,
-            )
+            try:
+                summary_resp = SummaryResponse(
+                    id=summary.id,
+                    meeting_id=summary.meeting_id,
+                    summary_text=summary.summary_text,
+                    decisions=summary.decisions_json or [],
+                    topics=summary.topics_json or [],
+                    speakers=summary.speakers_json or [],
+                    llm_provider=summary.llm_provider,
+                    llm_model=summary.llm_model,
+                    llm_tier=summary.llm_tier,
+                    generated_at=summary.generated_at,
+                )
+            except Exception as e:
+                logger.error(f"Failed to build SummaryResponse: {e}")
+
+        # Convert action items, skipping any that fail validation
+        action_item_responses = []
+        for ai in action_items:
+            try:
+                action_item_responses.append(ActionItemResponse.model_validate(ai))
+            except Exception as e:
+                logger.warning(f"Failed to serialize action item {ai.id}: {e}")
 
         return AnalysisResponse(
             meeting_id=meeting_id,
             status=status,
             summary=summary_resp,
-            action_items=[ActionItemResponse.model_validate(ai) for ai in action_items],
+            action_items=action_item_responses,
             llm_provider=summary.llm_provider if summary else None,
             llm_model=summary.llm_model if summary else None,
             llm_tier=summary.llm_tier if summary else None,
