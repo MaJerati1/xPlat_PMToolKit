@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import before_meeting, transcript, after_meeting, health, quick_analyze, settings as settings_routes
+from app.api.routes import before_meeting, transcript, after_meeting, health, quick_analyze, settings as settings_routes, google_auth
 from app.core.config import settings
 
 
@@ -43,3 +43,4 @@ app.include_router(quick_analyze.router, prefix="/api", tags=["Quick Analyze"])
 app.include_router(before_meeting.router, prefix="/api", tags=["Before Meeting"])
 app.include_router(transcript.router, prefix="/api", tags=["Transcript Ingestion"])
 app.include_router(after_meeting.router, prefix="/api", tags=["After Meeting"])
+app.include_router(google_auth.router, prefix="/api", tags=["Google OAuth"])

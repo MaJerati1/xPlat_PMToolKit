@@ -15,6 +15,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -352,12 +353,55 @@ async def get_global_tracking_dashboard(
 # ============================================
 
 @router.post("/meetings/{meeting_id}/minutes")
-async def generate_minutes(meeting_id: UUID):
-    """Generate formatted meeting minutes document (Word/PDF)."""
-    return {
-        "meeting_id": str(meeting_id),
-        "message": "Minutes generation not yet implemented. Scheduled for May 8-15.",
-    }
+async def generate_minutes(
+    meeting_id: UUID,
+    format: str = Query("json", description="Output format: json, docx, or pdf"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate formal meeting minutes from analysis data.
+
+    Requires that the meeting has been analyzed first (summary must exist).
+    Compiles meeting details, attendees, executive summary, key decisions,
+    discussion topics, action items, and next steps into a polished document.
+
+    Supports three output formats:
+    - **json** (default): Structured JSON for frontend rendering
+    - **docx**: Downloadable Word document with formatted tables and styling
+    - **pdf**: Downloadable PDF generated from an HTML template
+    """
+    import logging
+    from app.services.minutes_generator import MinutesGeneratorService
+    logger = logging.getLogger(__name__)
+
+    try:
+        generator = MinutesGeneratorService(db)
+
+        if format == "docx":
+            docx_bytes = await generator.generate_minutes_docx(meeting_id)
+            return Response(
+                content=docx_bytes,
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                headers={"Content-Disposition": f"attachment; filename=minutes_{meeting_id}.docx"},
+            )
+
+        if format == "pdf":
+            pdf_bytes = await generator.generate_minutes_pdf(meeting_id)
+            content_type = "application/pdf" if isinstance(pdf_bytes, bytes) and pdf_bytes[:4] == b'%PDF' else "text/html"
+            return Response(
+                content=pdf_bytes,
+                media_type=content_type,
+                headers={"Content-Disposition": f"attachment; filename=minutes_{meeting_id}.pdf"},
+            )
+
+        # Default: JSON
+        minutes = await generator.generate_minutes(meeting_id)
+        return minutes.to_dict()
+
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Minutes generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Minutes generation failed: {str(e)}")
 
 
 # ============================================

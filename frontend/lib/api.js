@@ -180,4 +180,36 @@ export const api = {
   // Health
   checkKeys: () => request('/health/check-keys'),
   diagnostics: () => request('/health/diagnostics'),
+
+  // Calendar
+  getCalendarEvents: (daysAhead = 14) => request(`/api/calendar/events?days_ahead=${daysAhead}`),
+  importCalendarEvent: (eventId) => directRequest(`/api/calendar/events/${eventId}/import`, { method: 'POST' }),
+  getGoogleAuthStatus: () => request('/api/auth/google/status'),
+  getGoogleAuthUrl: () => request('/api/auth/google'),
+
+  // Documents
+  suggestDocuments: (meetingId) => request(`/api/meetings/${meetingId}/documents/suggest`),
+  approveDocuments: (meetingId, documents) =>
+    request(`/api/meetings/${meetingId}/documents/approve-with-metadata`, {
+      method: 'POST',
+      body: JSON.stringify(documents),
+    }),
+  getMeetingDocuments: (meetingId) => request(`/api/meetings/${meetingId}/documents`),
+  removeDocument: (meetingId, docId) =>
+    request(`/api/meetings/${meetingId}/documents/${docId}`, { method: 'DELETE' }),
+
+  // Briefing
+  generateBriefing: (meetingId, format = 'json') =>
+    request(`/api/meetings/${meetingId}/briefing`, {
+      method: 'POST',
+      body: JSON.stringify({ format }),
+    }),
+
+  // Minutes
+  generateMinutes: (meetingId, format = 'json') =>
+    directRequest(`/api/meetings/${meetingId}/minutes?format=${format}`, { method: 'POST' }),
+
+  // Meeting list
+  listMeetings: (page = 1, perPage = 50) => request(`/api/meetings?page=${page}&per_page=${perPage}`),
+  getMeeting: (meetingId) => request(`/api/meetings/${meetingId}`),
 };

@@ -219,3 +219,90 @@ class AgendaTextParseResponse(BaseModel):
     items: List[AgendaItemCreate]
     parse_method: str = Field(description="Method used: 'rule_based' or 'llm'")
     raw_text: str = Field(description="Original input text")
+
+
+# ============================================
+# DOCUMENT GATHERING & SUGGESTIONS
+# ============================================
+
+class DocumentSuggestion(BaseModel):
+    """A document suggested by the gathering engine."""
+    file_id: str
+    name: str
+    mime_type: str
+    web_view_link: Optional[str] = None
+    icon_link: Optional[str] = None
+    modified_time: Optional[str] = None
+    owners: List[str] = []
+    parent_folder: Optional[str] = None
+    size: Optional[int] = None
+    matched_keyword: Optional[str] = None
+    relevance_score: float = 0.0
+
+
+class DocumentSuggestResponse(BaseModel):
+    """Response from the document gathering engine."""
+    meeting_id: uuid.UUID
+    suggestions: List[DocumentSuggestion] = []
+    sources_searched: List[str] = ["google_drive"]
+    message: str = ""
+
+
+class DocumentApproveRequest(BaseModel):
+    """Request to approve/reject suggested documents."""
+    approved_file_ids: List[str] = Field(
+        ..., description="List of file IDs to approve from the suggestions"
+    )
+
+
+class DocumentApproveResponse(BaseModel):
+    """Response after document approval."""
+    meeting_id: uuid.UUID
+    approved_count: int = 0
+    documents: List[dict] = []
+
+
+class DocumentResponse(BaseModel):
+    """A document linked to a meeting."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    meeting_id: uuid.UUID
+    agenda_item_id: Optional[uuid.UUID] = None
+    source: str
+    source_file_id: Optional[str] = None
+    file_name: str
+    file_path: Optional[str] = None
+    file_url: Optional[str] = None
+    mime_type: Optional[str] = None
+    approved: bool = False
+    approved_at: Optional[dt.datetime] = None
+    metadata_json: Optional[dict] = None
+    created_at: dt.datetime
+
+
+# ============================================
+# BRIEFING PACKAGE
+# ============================================
+
+class BriefingRequest(BaseModel):
+    """Request parameters for briefing generation."""
+    include_outstanding_actions: bool = Field(True, description="Include outstanding action items from previous meetings")
+    include_documents: bool = Field(True, description="Include approved documents")
+    format: str = Field("json", description="Output format: 'json' or 'docx'")
+
+
+class BriefingSectionResponse(BaseModel):
+    """A section in the briefing package."""
+    title: str
+    content: str = ""
+    items: List[str] = []
+
+
+class BriefingResponse(BaseModel):
+    """Complete briefing package response."""
+    meeting_id: uuid.UUID
+    meeting_title: str
+    generated_at: str
+    sections: List[BriefingSectionResponse] = []
+    metadata: dict = {}

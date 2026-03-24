@@ -92,3 +92,36 @@ async def meeting_id(client):
     """Create a meeting and return its ID. Shared helper fixture."""
     resp = await client.post("/api/meetings", json={"title": "Test Meeting"})
     return resp.json()["id"]
+
+
+@pytest_asyncio.fixture
+async def sample_meeting_id(client):
+    """Create a meeting with agenda items and return its ID.
+
+    Used by document gathering and briefing tests that need a
+    populated meeting to work with.
+    """
+    # Create meeting
+    resp = await client.post("/api/meetings", json={
+        "title": "Q2 Planning Sync",
+        "date": "2026-04-01",
+        "time": "10:00:00",
+        "duration_minutes": 60,
+    })
+    mid = resp.json()["id"]
+
+    # Add agenda items
+    await client.post(f"/api/meetings/{mid}/agenda", json=[
+        {"title": "Revenue forecast review", "time_allocation_minutes": 15},
+        {"title": "Hiring plan update", "time_allocation_minutes": 10},
+        {"title": "Product roadmap priorities", "time_allocation_minutes": 20},
+        {"title": "Engineering sprint review", "time_allocation_minutes": 15},
+    ])
+
+    # Add an attendee
+    await client.post(f"/api/meetings/{mid}/attendees", json=[
+        {"name": "Alice Johnson", "email": "alice@example.com", "role": "organizer"},
+        {"name": "Bob Smith", "email": "bob@example.com", "role": "participant"},
+    ])
+
+    return mid

@@ -4,26 +4,34 @@ Fully implemented endpoints for:
   - Meeting CRUD (create, read, update, delete, list)
   - Agenda item CRUD (add, update, delete, reorder, parse from text)
   - Attendee management (add, list, remove)
-  - Document suggestion and approval (stubs for future implementation)
-  - Briefing package generation (stub for future implementation)
+  - Document gathering and approval workflow
+  - Briefing package generation (JSON + Word document)
   - Calendar event import (stub for future implementation)
 """
 
+import logging
 from typing import Optional, List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Header
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.schemas.meeting import (
     MeetingCreate, MeetingUpdate, MeetingResponse, MeetingListResponse,
     AgendaItemCreate, AgendaItemUpdate, AgendaItemResponse, AgendaItemReorder,
     AttendeeCreate, AttendeeResponse,
     AgendaTextParseRequest, AgendaTextParseResponse,
+    DocumentSuggestResponse, DocumentSuggestion,
+    DocumentApproveRequest, DocumentApproveResponse,
+    BriefingRequest, BriefingResponse, BriefingSectionResponse,
 )
 from app.services.meeting_service import MeetingService
 from app.parsers.agenda_parser import parse_agenda_text
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -329,55 +337,476 @@ async def remove_attendee(
 # DOCUMENT GATHERING (stubs for next task)
 # ============================================
 
-@router.get("/meetings/{meeting_id}/documents/suggest")
-async def suggest_documents(meeting_id: UUID):
-    """Trigger document gathering; returns suggested documents based on agenda keywords.
+@router.get("/meetings/{meeting_id}/documents/suggest", response_model=DocumentSuggestResponse)
+async def suggest_documents(
+    meeting_id: UUID,
+    access_token: Optional[str] = Header(None, alias="X-Google-Access-Token"),
+    max_per_item: int = Query(5, ge=1, le=20),
+    recency_days: int = Query(90, ge=1, le=365),
+    db: AsyncSession = Depends(get_db),
+):
+    """Search connected storage for documents matching this meeting's agenda items.
 
-    Searches connected file providers (Google Drive, OneDrive) using metadata-only
-    queries derived from agenda item titles and descriptions. Never reads document content.
+    Uses metadata-only matching (file names, folders, modification dates) — never
+    reads document content.
+
+    The Google access token can be provided either:
+    1. In the `X-Google-Access-Token` header, or
+    2. Automatically from the stored OAuth token (after connecting via /api/auth/google)
     """
-    # TODO: Implement in "Implement document gathering and linking engine" task
+    from app.services.document_gathering import DocumentGatheringService
+    from app.api.routes.google_auth import _token_store
+
+    service = MeetingService(db)
+    meeting = await service.get_meeting(meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+
+    # Get agenda item titles
+    agenda = await service.get_agenda_items(meeting_id)
+    if not agenda:
+        return DocumentSuggestResponse(
+            meeting_id=meeting_id,
+            suggestions=[],
+            message="No agenda items found. Add agenda items first, then search for documents.",
+        )
+
+    agenda_titles = [item.title for item in agenda]
+
+    # Auto-fetch token from OAuth store if not provided in header
+    if not access_token:
+        access_token = _token_store.get("access_token")
+
+    if not access_token:
+        return DocumentSuggestResponse(
+            meeting_id=meeting_id,
+            suggestions=[],
+            message="No Google access token provided. Connect your Google account to search Drive for documents. Send the token in the X-Google-Access-Token header.",
+        )
+
+    try:
+        gathering = DocumentGatheringService(db)
+        results = await gathering.gather_documents(
+            meeting_id=meeting_id,
+            agenda_titles=agenda_titles,
+            access_token=access_token,
+            max_per_item=max_per_item,
+            recency_days=recency_days,
+        )
+
+        suggestions = [DocumentSuggestion(**r) for r in results]
+        return DocumentSuggestResponse(
+            meeting_id=meeting_id,
+            suggestions=suggestions,
+            message=f"Found {len(suggestions)} document(s) matching your agenda items.",
+        )
+    except Exception as e:
+        logger.error(f"Document gathering failed: {e}")
+        return DocumentSuggestResponse(
+            meeting_id=meeting_id,
+            suggestions=[],
+            message=f"Document search failed: {str(e)}. Check your Google account connection.",
+        )
+
+
+@router.post("/meetings/{meeting_id}/documents/approve", response_model=DocumentApproveResponse)
+async def approve_documents(
+    meeting_id: UUID,
+    request: DocumentApproveRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve selected documents from the suggestion list.
+
+    Takes a list of file IDs that the user approved from the suggestion workflow.
+    Creates Document records in the database linked to this meeting.
+    Only approved documents will be included in the briefing package.
+    """
+    from app.models.meeting import Document
+    from sqlalchemy import select
+
+    service = MeetingService(db)
+    meeting = await service.get_meeting(meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+
+    if not request.approved_file_ids:
+        return DocumentApproveResponse(
+            meeting_id=meeting_id,
+            approved_count=0,
+            documents=[],
+        )
+
+    approved_docs = []
+    for file_id in request.approved_file_ids:
+        # Check if already approved (avoid duplicates)
+        existing = await db.execute(
+            select(Document).where(
+                Document.meeting_id == meeting_id,
+                Document.source_file_id == file_id,
+            )
+        )
+        if existing.scalar_one_or_none():
+            continue
+
+        doc = Document(
+            meeting_id=meeting_id,
+            source="google_drive",
+            source_file_id=file_id,
+            file_name=file_id,  # Will be enriched if we have the name
+            approved=True,
+            approved_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        )
+        db.add(doc)
+        approved_docs.append(doc)
+
+    await db.flush()
+    for doc in approved_docs:
+        await db.refresh(doc)
+    await db.commit()
+
+    return DocumentApproveResponse(
+        meeting_id=meeting_id,
+        approved_count=len(approved_docs),
+        documents=[{
+            "id": str(d.id),
+            "file_name": d.file_name,
+            "source_file_id": d.source_file_id,
+            "approved": d.approved,
+        } for d in approved_docs],
+    )
+
+
+@router.post("/meetings/{meeting_id}/documents/approve-with-metadata")
+async def approve_documents_with_metadata(
+    meeting_id: UUID,
+    documents: List[dict],
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve documents with full metadata from the suggestion results.
+
+    Accepts the full suggestion objects so we can store file names, URLs, and types.
+    """
+    from app.models.meeting import Document
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+
+    service = MeetingService(db)
+    meeting = await service.get_meeting(meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+
+    approved_docs = []
+    for doc_data in documents:
+        file_id = doc_data.get("file_id")
+        if not file_id:
+            continue
+
+        # Skip duplicates
+        existing = await db.execute(
+            select(Document).where(
+                Document.meeting_id == meeting_id,
+                Document.source_file_id == file_id,
+            )
+        )
+        if existing.scalar_one_or_none():
+            continue
+
+        doc = Document(
+            meeting_id=meeting_id,
+            source="google_drive",
+            source_file_id=file_id,
+            file_name=doc_data.get("name", file_id),
+            file_url=doc_data.get("web_view_link"),
+            mime_type=doc_data.get("mime_type"),
+            approved=True,
+            approved_at=datetime.now(timezone.utc),
+            metadata_json={
+                "owners": doc_data.get("owners", []),
+                "modified_time": doc_data.get("modified_time"),
+                "matched_keyword": doc_data.get("matched_keyword"),
+            },
+        )
+        db.add(doc)
+        approved_docs.append(doc)
+
+    await db.flush()
+    for doc in approved_docs:
+        await db.refresh(doc)
+    await db.commit()
+
     return {
         "meeting_id": str(meeting_id),
-        "suggestions": [],
-        "message": "Document gathering not yet implemented. Scheduled for Mar 27 - Apr 10.",
+        "approved_count": len(approved_docs),
+        "documents": [{
+            "id": str(d.id),
+            "file_name": d.file_name,
+            "source_file_id": d.source_file_id,
+            "file_url": d.file_url,
+            "mime_type": d.mime_type,
+            "approved": d.approved,
+        } for d in approved_docs],
     }
 
 
-@router.post("/meetings/{meeting_id}/documents/approve")
-async def approve_documents(meeting_id: UUID):
-    """Submit user-approved document selections from the review workflow."""
-    # TODO: Implement in "Build document review and approval workflow" task
+@router.get("/meetings/{meeting_id}/documents")
+async def list_meeting_documents(
+    meeting_id: UUID,
+    approved_only: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all documents linked to a meeting."""
+    from app.models.meeting import Document
+    from sqlalchemy import select
+
+    query = select(Document).where(Document.meeting_id == meeting_id)
+    if approved_only:
+        query = query.where(Document.approved == True)
+    query = query.order_by(Document.created_at.desc())
+
+    result = await db.execute(query)
+    docs = list(result.scalars().all())
+
     return {
         "meeting_id": str(meeting_id),
-        "approved": [],
-        "message": "Document approval not yet implemented. Scheduled for Apr 3 - Apr 14.",
+        "total": len(docs),
+        "documents": [{
+            "id": str(d.id),
+            "file_name": d.file_name,
+            "source": d.source,
+            "source_file_id": d.source_file_id,
+            "file_url": d.file_url,
+            "mime_type": d.mime_type,
+            "approved": d.approved,
+            "approved_at": d.approved_at.isoformat() if d.approved_at else None,
+            "metadata": d.metadata_json,
+            "created_at": d.created_at.isoformat() if d.created_at else None,
+        } for d in docs],
     }
+
+
+@router.delete("/meetings/{meeting_id}/documents/{document_id}", status_code=204)
+async def remove_document(
+    meeting_id: UUID,
+    document_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a document from a meeting."""
+    from app.models.meeting import Document
+    from sqlalchemy import select
+
+    result = await db.execute(
+        select(Document).where(
+            Document.id == document_id,
+            Document.meeting_id == meeting_id,
+        )
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    await db.delete(doc)
+    await db.commit()
 
 
 # ============================================
-# BRIEFING PACKAGE (stub for next task)
+# BRIEFING PACKAGE
 # ============================================
 
 @router.post("/meetings/{meeting_id}/briefing")
-async def generate_briefing(meeting_id: UUID):
-    """Generate briefing package from approved documents and agenda."""
-    # TODO: Implement in "Create pre-meeting briefing package generator" task
-    return {
-        "meeting_id": str(meeting_id),
-        "message": "Briefing generation not yet implemented. Scheduled for Apr 3 - Apr 17.",
-    }
+async def generate_briefing(
+    meeting_id: UUID,
+    request: BriefingRequest = BriefingRequest(),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a pre-meeting briefing package.
+
+    Compiles the meeting agenda, attendee list, approved documents, and outstanding
+    action items from previous meetings into a consolidated briefing.
+
+    Supports two output formats:
+    - **json** (default): Returns structured JSON for frontend rendering.
+    - **docx**: Returns a downloadable Word document.
+    """
+    from app.services.briefing_generator import BriefingGeneratorService
+
+    try:
+        generator = BriefingGeneratorService(db)
+
+        if request.format == "docx":
+            docx_bytes = await generator.generate_briefing_docx(meeting_id)
+            return Response(
+                content=docx_bytes,
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.presentation",
+                headers={
+                    "Content-Disposition": f"attachment; filename=briefing_{meeting_id}.docx"
+                },
+            )
+
+        briefing = await generator.generate_briefing(
+            meeting_id,
+            include_outstanding_actions=request.include_outstanding_actions,
+            include_documents=request.include_documents,
+        )
+
+        return briefing.to_dict()
+
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Briefing generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Briefing generation failed: {str(e)}")
 
 
 # ============================================
-# CALENDAR INTEGRATION (stub for next task)
+# CALENDAR INTEGRATION
 # ============================================
 
 @router.get("/calendar/events")
-async def list_calendar_events():
-    """Fetch upcoming calendar events from connected Google Calendar."""
-    # TODO: Implement in calendar integration phase
+async def list_calendar_events(
+    days_ahead: int = Query(14, ge=1, le=90),
+    max_results: int = Query(20, ge=1, le=50),
+):
+    """Fetch upcoming calendar events from connected Google Calendar.
+
+    Returns events for the next N days. Requires Google OAuth connection
+    (connect at /api/auth/google first).
+    """
+    from app.services.calendar_service import GoogleCalendarService
+    from app.api.routes.google_auth import _token_store
+
+    token = _token_store.get("access_token")
+    if not token:
+        return {
+            "events": [],
+            "connected": False,
+            "message": "Google account not connected. Visit /api/auth/google to connect.",
+        }
+
+    try:
+        cal = GoogleCalendarService(token)
+        events = cal.list_upcoming_events(max_results=max_results, days_ahead=days_ahead)
+        return {
+            "events": [e.to_dict() for e in events],
+            "connected": True,
+            "total": len(events),
+            "days_ahead": days_ahead,
+        }
+    except Exception as e:
+        logger.error(f"Calendar fetch failed: {e}")
+        return {
+            "events": [],
+            "connected": True,
+            "error": str(e),
+            "message": "Failed to fetch calendar events. Token may have expired — reconnect at /api/auth/google.",
+        }
+
+
+@router.post("/calendar/events/{event_id}/import")
+async def import_calendar_event(
+    event_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Import a Google Calendar event as a Meeting Toolkit meeting.
+
+    Creates a meeting with:
+    - Title, date, time, duration from the calendar event
+    - Meeting link (Google Meet, Zoom, etc.) if present
+    - Attendees from the event's guest list
+    - Agenda items parsed from the event description (bullet points, numbered lists)
+
+    The imported meeting can then be used for document gathering, briefing generation,
+    and transcript analysis.
+    """
+    from app.services.calendar_service import GoogleCalendarService
+    from app.api.routes.google_auth import _token_store
+    from app.models.meeting import Meeting, AgendaItem, MeetingAttendee
+    from sqlalchemy import select
+
+    token = _token_store.get("access_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Google account not connected. Visit /api/auth/google first.")
+
+    # Check if already imported
+    existing = await db.execute(
+        select(Meeting).where(Meeting.calendar_event_id == event_id)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="This calendar event has already been imported.")
+
+    try:
+        cal = GoogleCalendarService(token)
+        event = cal.get_event(event_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch event from Google Calendar: {str(e)}")
+
+    # Create the meeting
+    from datetime import date as date_type, time as time_type
+    meeting = Meeting(
+        title=event.title,
+        calendar_event_id=event.google_event_id,
+        calendar_provider="google",
+        meeting_link=event.meeting_link,
+        notes=event.description[:2000] if event.description else None,
+        status="scheduled",
+    )
+
+    # Parse and set date/time
+    if event.date:
+        try:
+            meeting.date = date_type.fromisoformat(event.date)
+        except (ValueError, TypeError):
+            pass
+    if event.time:
+        try:
+            meeting.time = time_type.fromisoformat(event.time)
+        except (ValueError, TypeError):
+            pass
+    if event.duration_minutes:
+        meeting.duration_minutes = event.duration_minutes
+
+    db.add(meeting)
+    await db.flush()
+    await db.refresh(meeting)
+
+    # Add attendees
+    attendees_added = []
+    for att_data in event.attendees:
+        attendee = MeetingAttendee(
+            meeting_id=meeting.id,
+            email=att_data["email"],
+            name=att_data["name"],
+            role="organizer" if att_data.get("is_organizer") else "participant",
+            rsvp_status=att_data.get("rsvp_status", "pending"),
+        )
+        db.add(attendee)
+        attendees_added.append(attendee)
+
+    # Parse agenda items from description
+    agenda_items_added = []
+    parsed_items = event.extract_agenda_items()
+    for i, item_data in enumerate(parsed_items):
+        agenda_item = AgendaItem(
+            meeting_id=meeting.id,
+            title=item_data["title"],
+            item_order=i,
+            status="pending",
+        )
+        db.add(agenda_item)
+        agenda_items_added.append(agenda_item)
+
+    await db.commit()
+    await db.refresh(meeting)
+
     return {
-        "events": [],
-        "message": "Calendar integration not yet implemented. Requires Google OAuth credentials.",
+        "message": f"Successfully imported '{event.title}' from Google Calendar",
+        "meeting_id": str(meeting.id),
+        "title": event.title,
+        "date": event.date,
+        "time": event.time,
+        "duration_minutes": event.duration_minutes,
+        "meeting_link": event.meeting_link,
+        "attendees_imported": len(attendees_added),
+        "agenda_items_parsed": len(agenda_items_added),
+        "agenda_items": [{"title": a.title} for a in agenda_items_added],
+        "google_event_link": event.html_link,
     }
