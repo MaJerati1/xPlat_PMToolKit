@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react';
 import Header from '../../components/Header';
 import { api } from '../../lib/api';
-import { Sparkles, Loader2, Check, Key, Server, Calendar, Shield, AlertTriangle, Copy, CheckCircle2, XCircle, Minus, ArrowRight, Cpu } from 'lucide-react';
+import { Sparkles, Loader2, Check, Key, Server, Calendar, Shield, AlertTriangle, Copy, CheckCircle2, XCircle, Minus, ArrowRight, Cpu, Link2, ExternalLink } from 'lucide-react';
 
 function StatusDot({ status, detail }) {
   if (!status) return null;
@@ -20,6 +20,129 @@ function KeyInput({ label, value, onChange, placeholder, hint, status, statusDet
         className="w-full px-3.5 py-2.5 bg-bgcard border border-bdr rounded-lg font-mono text-sm text-txt placeholder:text-txttri focus:outline-none focus:ring-2 focus:ring-acc/20 focus:border-acc transition-all" />
       {hint && <p className="text-xs text-txttri mt-1 leading-relaxed">{hint}</p>}
       <StatusDot status={status} detail={statusDetail} />
+    </div>
+  );
+}
+
+function GoogleConnectionCard({ keys, setKey }) {
+  const [googleStatus, setGoogleStatus] = useState(null);
+  const [connecting, setConnecting] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [showCredentials, setShowCredentials] = useState(false);
+
+  useEffect(() => {
+    checkGoogleStatus();
+  }, []);
+
+  // Check for ?google=connected in URL (redirect back from OAuth)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('google') === 'connected') {
+        checkGoogleStatus();
+        // Clean up the URL
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+    }
+  }, []);
+
+  const checkGoogleStatus = async () => {
+    try {
+      const status = await api.getGoogleAuthStatus();
+      setGoogleStatus(status);
+    } catch { setGoogleStatus(null); }
+  };
+
+  const handleConnect = async () => {
+    setConnecting(true);
+    try {
+      const data = await api.getGoogleAuthUrl();
+      if (data.auth_url) {
+        window.open(data.auth_url, '_blank', 'width=600,height=700');
+        // Poll for connection status
+        const poll = setInterval(async () => {
+          try {
+            const status = await api.getGoogleAuthStatus();
+            if (status.connected) {
+              setGoogleStatus(status);
+              clearInterval(poll);
+              setConnecting(false);
+            }
+          } catch {}
+        }, 2000);
+        // Stop polling after 2 minutes
+        setTimeout(() => { clearInterval(poll); setConnecting(false); }, 120000);
+      }
+    } catch (e) {
+      setConnecting(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    setDisconnecting(true);
+    try {
+      await fetch('http://localhost:8000/api/auth/google', { method: 'DELETE' });
+      setGoogleStatus({ connected: false });
+    } catch {}
+    finally { setDisconnecting(false); }
+  };
+
+  const isConnected = googleStatus?.connected;
+
+  return (
+    <div className="bg-bgcard rounded-xl border border-bdr shadow-sm p-6 mb-4">
+      <h3 className="text-sm font-semibold text-txt flex items-center gap-2 mb-1">
+        <Calendar className="w-4 h-4 text-blu" /> Google Calendar & Drive
+      </h3>
+      <p className="text-xs text-txttri mb-4">Optional — enables calendar import and document gathering from Google Drive.</p>
+
+      {/* Connection Status */}
+      <div className={`p-4 rounded-xl mb-4 flex items-center justify-between ${
+        isConnected ? 'bg-grnsoft border border-grn/20' : 'bg-bgelev border border-bdr'
+      }`}>
+        <div className="flex items-center gap-3">
+          <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${
+            isConnected ? 'bg-grn/10' : 'bg-bghover'
+          }`}>
+            {isConnected ? <CheckCircle2 className="w-5 h-5 text-grn" /> : <Link2 className="w-5 h-5 text-txttri" />}
+          </div>
+          <div>
+            <p className={`text-sm font-semibold ${isConnected ? 'text-grn' : 'text-txt'}`}>
+              {isConnected ? 'Google Account Connected' : 'Not Connected'}
+            </p>
+            <p className="text-xs text-txttri">
+              {isConnected
+                ? `Connected${googleStatus.connected_at ? ` · ${new Date(googleStatus.connected_at).toLocaleString()}` : ''}`
+                : 'Connect to import calendar events and search Drive for documents'}
+            </p>
+          </div>
+        </div>
+        <div>
+          {isConnected ? (
+            <button onClick={handleDisconnect} disabled={disconnecting}
+              className="px-3 py-1.5 bg-bgcard text-txtsec rounded-lg text-xs font-medium border border-bdr hover:text-red hover:border-red/30 transition-all">
+              {disconnecting ? 'Disconnecting...' : 'Disconnect'}
+            </button>
+          ) : (
+            <button onClick={handleConnect} disabled={connecting}
+              className="px-4 py-2 bg-blu text-white rounded-lg text-sm font-semibold hover:bg-blu/90 transition-all inline-flex items-center gap-2 disabled:opacity-50">
+              {connecting ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Connecting...</> : <><ExternalLink className="w-3.5 h-3.5" /> Connect Google Account</>}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Credential fields (collapsible) */}
+      <button onClick={() => setShowCredentials(!showCredentials)}
+        className="text-xs text-txtsec hover:text-txt transition-colors flex items-center gap-1 mb-3">
+        {showCredentials ? '▾' : '▸'} {showCredentials ? 'Hide' : 'Show'} OAuth credentials
+      </button>
+      {showCredentials && (
+        <div className="space-y-5 pt-2">
+          <KeyInput label="Google Client ID" value={keys.GOOGLE_CLIENT_ID} onChange={v=>setKey('GOOGLE_CLIENT_ID',v)} placeholder="123456789-abc.apps.googleusercontent.com" type="text" />
+          <KeyInput label="Google Client Secret" value={keys.GOOGLE_CLIENT_SECRET} onChange={v=>setKey('GOOGLE_CLIENT_SECRET',v)} placeholder="GOCSPX-..." hint="Get from console.cloud.google.com → APIs & Services → Credentials" />
+        </div>
+      )}
     </div>
   );
 }
@@ -317,14 +440,7 @@ export default function SetupPage() {
         </div>
 
         {/* Google OAuth */}
-        <div className="bg-bgcard rounded-xl border border-bdr shadow-sm p-6 mb-4">
-          <h3 className="text-sm font-semibold text-txt flex items-center gap-2 mb-1"><Calendar className="w-4 h-4 text-blu" /> Google Calendar & Drive</h3>
-          <p className="text-xs text-txttri mb-5">Optional — enables calendar integration and document gathering.</p>
-          <div className="space-y-5">
-            <KeyInput label="Google Client ID" value={keys.GOOGLE_CLIENT_ID} onChange={v=>setKey('GOOGLE_CLIENT_ID',v)} placeholder="123456789-abc.apps.googleusercontent.com" type="text" />
-            <KeyInput label="Google Client Secret" value={keys.GOOGLE_CLIENT_SECRET} onChange={v=>setKey('GOOGLE_CLIENT_SECRET',v)} placeholder="GOCSPX-..." hint="Get from console.cloud.google.com → Credentials" />
-          </div>
-        </div>
+        <GoogleConnectionCard keys={keys} setKey={setKey} />
 
         {/* Ollama */}
         <div className="bg-bgcard rounded-xl border border-bdr shadow-sm p-6 mb-6">

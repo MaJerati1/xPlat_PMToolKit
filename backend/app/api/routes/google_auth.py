@@ -5,10 +5,11 @@ Handles the OAuth consent flow:
 2. GET /api/auth/google/callback → Receives authorization code, exchanges for access token
 3. GET /api/auth/google/status → Check if we have a valid token
 
-Tokens are stored in-memory for the current session (single-user MVP).
+Tokens are persisted to the .env file so they survive container restarts.
 For production, tokens should be stored per-user in the database with encryption.
 """
 
+import os
 import logging
 from typing import Optional
 from datetime import datetime, timezone
@@ -22,9 +23,92 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# In-memory token storage (MVP single-user)
-# Production: store per-user in DB with encryption
+ENV_FILE_PATH = os.environ.get("ENV_FILE_PATH", ".env")
+
+# In-memory cache (loaded from .env on startup)
 _token_store: dict = {}
+
+
+def _load_tokens_from_env():
+    """Load persisted Google tokens from .env file on startup."""
+    global _token_store
+    if hasattr(settings, 'GOOGLE_ACCESS_TOKEN') and settings.GOOGLE_ACCESS_TOKEN:
+        _token_store["access_token"] = settings.GOOGLE_ACCESS_TOKEN
+    if hasattr(settings, 'GOOGLE_REFRESH_TOKEN') and settings.GOOGLE_REFRESH_TOKEN:
+        _token_store["refresh_token"] = settings.GOOGLE_REFRESH_TOKEN
+
+    # Also try reading directly from .env in case settings didn't pick them up
+    if not _token_store.get("access_token"):
+        try:
+            with open(ENV_FILE_PATH, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('GOOGLE_ACCESS_TOKEN=') and not line.startswith('#'):
+                        val = line.split('=', 1)[1].strip()
+                        if val:
+                            _token_store["access_token"] = val
+                    elif line.startswith('GOOGLE_REFRESH_TOKEN=') and not line.startswith('#'):
+                        val = line.split('=', 1)[1].strip()
+                        if val:
+                            _token_store["refresh_token"] = val
+        except FileNotFoundError:
+            pass
+
+    if _token_store.get("access_token"):
+        logger.info("Loaded Google OAuth tokens from persistent storage")
+
+
+def _persist_tokens():
+    """Save tokens to .env file for persistence across restarts."""
+    import re
+
+    try:
+        try:
+            with open(ENV_FILE_PATH, 'r') as f:
+                content = f.read()
+        except FileNotFoundError:
+            content = ""
+
+        for key in ["GOOGLE_ACCESS_TOKEN", "GOOGLE_REFRESH_TOKEN"]:
+            value = _token_store.get(key.replace("GOOGLE_", "").lower(), "")
+            # Map store keys to env keys
+            if key == "GOOGLE_ACCESS_TOKEN":
+                value = _token_store.get("access_token", "")
+            elif key == "GOOGLE_REFRESH_TOKEN":
+                value = _token_store.get("refresh_token", "")
+
+            pattern = rf'^(#?\s*)?{re.escape(key)}\s*=\s*.*$'
+            if re.search(pattern, content, re.MULTILINE):
+                content = re.sub(pattern, f"{key}={value}", content, flags=re.MULTILINE)
+            else:
+                if not content.endswith("\n"):
+                    content += "\n"
+                content += f"{key}={value}\n"
+
+        with open(ENV_FILE_PATH, 'w') as f:
+            f.write(content)
+
+        logger.info("Google OAuth tokens persisted to .env file")
+    except Exception as e:
+        logger.warning(f"Failed to persist tokens to .env: {e}")
+
+
+def _clear_persisted_tokens():
+    """Remove tokens from .env file."""
+    import re
+    try:
+        with open(ENV_FILE_PATH, 'r') as f:
+            content = f.read()
+        for key in ["GOOGLE_ACCESS_TOKEN", "GOOGLE_REFRESH_TOKEN"]:
+            content = re.sub(rf'^{re.escape(key)}=.*$', f"{key}=", content, flags=re.MULTILINE)
+        with open(ENV_FILE_PATH, 'w') as f:
+            f.write(content)
+    except Exception as e:
+        logger.warning(f"Failed to clear persisted tokens: {e}")
+
+
+# Load tokens on module import (server startup)
+_load_tokens_from_env()
 
 
 def _get_flow():
@@ -60,12 +144,7 @@ def _get_flow():
 
 @router.get("/auth/google")
 async def google_auth_start():
-    """Start the Google OAuth flow.
-
-    Redirects the user to Google's consent screen. After approval,
-    Google redirects back to /api/auth/google/callback with an
-    authorization code.
-    """
+    """Start the Google OAuth flow."""
     try:
         flow = _get_flow()
         auth_url, state = flow.authorization_url(
@@ -73,10 +152,7 @@ async def google_auth_start():
             include_granted_scopes="true",
             prompt="consent",
         )
-
-        # Store state for CSRF protection
         _token_store["oauth_state"] = state
-
         return {"auth_url": auth_url, "state": state}
     except Exception as e:
         logger.error(f"OAuth start failed: {e}")
@@ -88,27 +164,21 @@ async def google_auth_callback(
     code: str = Query(...),
     state: Optional[str] = Query(None),
 ):
-    """Handle the OAuth callback from Google.
-
-    Exchanges the authorization code for access and refresh tokens.
-    Stores them in memory for use by the document gathering engine.
-    """
+    """Handle the OAuth callback from Google."""
     try:
         flow = _get_flow()
-
-        # Exchange authorization code for tokens
         flow.fetch_token(code=code)
         credentials = flow.credentials
 
-        # Store tokens
         _token_store["access_token"] = credentials.token
         _token_store["refresh_token"] = credentials.refresh_token
         _token_store["token_expiry"] = credentials.expiry.isoformat() if credentials.expiry else None
         _token_store["connected_at"] = datetime.now(timezone.utc).isoformat()
 
-        logger.info("Google OAuth connected successfully")
+        # Persist to .env for survival across restarts
+        _persist_tokens()
 
-        # Redirect to frontend setup page with success indicator
+        logger.info("Google OAuth connected successfully")
         return RedirectResponse(url=f"{settings.FRONTEND_URL}/setup?google=connected")
 
     except Exception as e:
@@ -120,7 +190,6 @@ async def google_auth_callback(
 async def google_auth_status():
     """Check the current Google OAuth connection status."""
     has_token = bool(_token_store.get("access_token"))
-
     return {
         "connected": has_token,
         "connected_at": _token_store.get("connected_at"),
@@ -132,11 +201,7 @@ async def google_auth_status():
 
 @router.get("/auth/google/token")
 async def get_google_token():
-    """Get the current Google access token for API calls.
-
-    Used internally by the frontend to pass to the document gathering endpoint.
-    In production, this should be authenticated and per-user.
-    """
+    """Get the current Google access token for API calls."""
     token = _token_store.get("access_token")
     if not token:
         raise HTTPException(
@@ -147,11 +212,9 @@ async def get_google_token():
     # Check if token needs refresh
     expiry = _token_store.get("token_expiry")
     if expiry:
-        from datetime import datetime
         try:
             exp_dt = datetime.fromisoformat(expiry)
             if exp_dt < datetime.now(timezone.utc):
-                # Try to refresh
                 refresh_token = _token_store.get("refresh_token")
                 if refresh_token:
                     token = await _refresh_access_token(refresh_token)
@@ -170,6 +233,7 @@ async def get_google_token():
 async def google_auth_disconnect():
     """Disconnect Google account by clearing stored tokens."""
     _token_store.clear()
+    _clear_persisted_tokens()
     return {"message": "Google account disconnected."}
 
 
@@ -191,12 +255,14 @@ async def _refresh_access_token(refresh_token: str) -> str:
     data = resp.json()
     new_token = data["access_token"]
 
-    # Update store
     _token_store["access_token"] = new_token
     if "expires_in" in data:
         from datetime import timedelta
         _token_store["token_expiry"] = (
             datetime.now(timezone.utc) + timedelta(seconds=data["expires_in"])
         ).isoformat()
+
+    # Persist the refreshed token
+    _persist_tokens()
 
     return new_token

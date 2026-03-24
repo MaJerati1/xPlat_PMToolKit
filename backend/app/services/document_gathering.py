@@ -86,13 +86,8 @@ class GoogleDriveService:
     ) -> List[DriveSearchResult]:
         """Search Drive for documents matching agenda item titles.
 
-        Args:
-            agenda_titles: List of agenda item titles to search for.
-            max_results_per_item: Max results per agenda item query.
-            recency_days: Only include files modified within this many days.
-
-        Returns:
-            Deduplicated list of search results, ranked by relevance.
+        Searches each keyword individually and combines results.
+        Uses both name matching and fullText matching for broader coverage.
         """
         all_results = []
         seen_ids = set()
@@ -102,28 +97,54 @@ class GoogleDriveService:
             if not keywords:
                 continue
 
-            try:
-                results = self._search_files(keywords, max_results_per_item, recency_days)
-                for result in results:
-                    if result.file_id not in seen_ids:
-                        result.matched_keyword = title
-                        seen_ids.add(result.file_id)
-                        all_results.append(result)
-            except Exception as e:
-                logger.warning(f"Drive search failed for '{title}': {e}")
+            logger.info(f"Document search for agenda '{title}' → keywords: {keywords}")
+
+            # Search each keyword individually for better results
+            for keyword in keywords:
+                try:
+                    results = self._search_files(keyword, max_results_per_item, recency_days)
+                    for result in results:
+                        if result.file_id not in seen_ids:
+                            result.matched_keyword = title
+                            seen_ids.add(result.file_id)
+                            all_results.append(result)
+                except Exception as e:
+                    logger.warning(f"Drive search failed for keyword '{keyword}' (from '{title}'): {e}")
+
+            # Also try the full meaningful phrase as a single query
+            if len(keywords) > 1:
+                phrase = " ".join(keywords[:3])
+                try:
+                    results = self._search_files(phrase, max_results_per_item, recency_days)
+                    for result in results:
+                        if result.file_id not in seen_ids:
+                            result.matched_keyword = title
+                            seen_ids.add(result.file_id)
+                            all_results.append(result)
+                except Exception as e:
+                    logger.warning(f"Drive phrase search failed for '{phrase}': {e}")
 
         # Sort by relevance (most recent first as a proxy)
         all_results.sort(key=lambda r: r.modified_time or "", reverse=True)
         return all_results
 
     def _search_files(
-        self, keywords: str, max_results: int, recency_days: int
+        self, keyword: str, max_results: int, recency_days: int
     ) -> List[DriveSearchResult]:
-        """Execute a Drive files.list query with metadata-only matching."""
+        """Execute a Drive files.list query for a single keyword.
+
+        Searches both file name and full text (metadata) for the keyword.
+        """
         from datetime import timedelta
 
-        # Build the query — name contains keywords, not trashed
-        query_parts = [f"name contains '{keywords}'", "trashed = false"]
+        # Escape single quotes in the keyword
+        safe_keyword = keyword.replace("'", "\\'")
+
+        # Search by name OR fullText — catches files with the keyword in name or description
+        query_parts = [
+            f"(name contains '{safe_keyword}' or fullText contains '{safe_keyword}')",
+            "trashed = false",
+        ]
 
         # Recency filter
         if recency_days:
@@ -159,9 +180,10 @@ class GoogleDriveService:
 
         return results
 
-    def _extract_keywords(self, title: str) -> str:
+    def _extract_keywords(self, title: str) -> List[str]:
         """Extract meaningful search keywords from an agenda item title.
 
+        Returns a list of individual keywords (not joined).
         Removes common filler words to improve search precision.
         """
         stopwords = {
@@ -172,17 +194,21 @@ class GoogleDriveService:
             "this", "that", "these", "those", "it", "its",
             "update", "review", "discuss", "item", "topic", "agenda",
             "meeting", "follow", "up", "status", "next", "steps",
+            "decision", "need", "new", "add", "decide", "about",
         }
 
         words = title.strip().split()
         meaningful = [w for w in words if w.lower() not in stopwords and len(w) > 2]
 
         if not meaningful:
-            # Fall back to the full title if all words are filtered
-            return title.strip()
+            # Fall back to splitting the title into words
+            meaningful = [w for w in words if len(w) > 2]
 
-        # Use up to 4 keywords for the search query
-        return " ".join(meaningful[:4])
+        if not meaningful:
+            return [title.strip()] if title.strip() else []
+
+        # Return up to 5 individual keywords
+        return meaningful[:5]
 
 
 class DocumentGatheringService:
