@@ -66,13 +66,15 @@ export default function ActionsPage() {
   const loadData = async () => {
     setLoading(true); setError(null);
     try {
-      const meetingData = await api.listMeetings(1, 50);
-      setMeetings(meetingData.meetings || []);
+      // Load all meetings for action items, but filter for dropdown display
+      const allData = await api.listMeetings(1, 50);
+      const namedData = await api.listNamedMeetings(1, 50);
+      setMeetings(namedData.meetings || []);
 
       if (selectedMeeting === 'all') {
         // Load action items from all meetings
         const allItems = [];
-        for (const m of (meetingData.meetings || [])) {
+        for (const m of (allData.meetings || [])) {
           try {
             const ai = await api.getActionItems(m.id);
             if (Array.isArray(ai)) {
@@ -83,7 +85,7 @@ export default function ActionsPage() {
         setItems(allItems);
       } else {
         const ai = await api.getActionItems(selectedMeeting);
-        const m = (meetingData.meetings || []).find(m => m.id === selectedMeeting);
+        const m = (allData.meetings || []).find(m => m.id === selectedMeeting);
         setItems((Array.isArray(ai) ? ai : []).map(i => ({ ...i, _meetingTitle: m?.title, rejected: false })));
       }
     } catch (e) { setError(e.message); }

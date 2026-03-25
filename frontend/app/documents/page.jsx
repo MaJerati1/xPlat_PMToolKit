@@ -15,7 +15,7 @@ export default function DocumentsPage() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    api.listMeetings(1, 50).then(data => {
+    api.listNamedMeetings(1, 50).then(data => {
       setMeetings(data.meetings?.filter(m => m.agenda_items?.length > 0) || []);
     }).catch(() => {});
   }, []);

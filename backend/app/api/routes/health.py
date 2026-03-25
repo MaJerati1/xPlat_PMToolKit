@@ -281,3 +281,48 @@ def _describe_key_issue(key: str, expected_prefix: str) -> str:
 def _mask_url(url: str) -> str:
     import re
     return re.sub(r'://([^:]+):([^@]+)@', r'://\1:***@', url)
+
+
+@router.get("/health/ollama-models")
+async def list_ollama_models():
+    """Detect installed models on the connected Ollama server.
+
+    Calls the Ollama /api/tags endpoint to list all available models.
+    Returns model names and sizes for the frontend model selector.
+    """
+    import httpx
+
+    base_url = settings.OLLAMA_BASE_URL
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{base_url}/api/tags", timeout=10.0)
+
+        if resp.status_code != 200:
+            return {"connected": False, "models": [], "error": f"HTTP {resp.status_code}"}
+
+        data = resp.json()
+        models = []
+        for m in data.get("models", []):
+            models.append({
+                "name": m.get("name", ""),
+                "model": m.get("model", m.get("name", "")),
+                "size": m.get("size", 0),
+                "size_gb": round(m.get("size", 0) / 1e9, 1) if m.get("size") else None,
+                "modified_at": m.get("modified_at", ""),
+                "family": m.get("details", {}).get("family", ""),
+                "parameter_size": m.get("details", {}).get("parameter_size", ""),
+            })
+
+        return {
+            "connected": True,
+            "base_url": base_url,
+            "models": models,
+            "total": len(models),
+        }
+    except Exception as e:
+        return {
+            "connected": False,
+            "base_url": base_url,
+            "models": [],
+            "error": str(e),
+        }

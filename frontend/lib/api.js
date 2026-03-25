@@ -211,5 +211,24 @@ export const api = {
 
   // Meeting list
   listMeetings: (page = 1, perPage = 50) => request(`/api/meetings?page=${page}&per_page=${perPage}`),
+  // Filtered meeting list — excludes auto-generated analysis meetings for cleaner dropdowns
+  listNamedMeetings: async (page = 1, perPage = 50) => {
+    const data = await request(`/api/meetings?page=${page}&per_page=${perPage}`);
+    const filtered = (data.meetings || []).filter(m => {
+      const title = m.title || '';
+      // Filter out auto-generated analysis meetings
+      if (title.startsWith('Analysis') && title.includes('/')) return false;
+      if (title.startsWith('Quick Analysis')) return false;
+      if (title === 'string') return false;
+      return true;
+    });
+    // Sort: meetings with dates first, then by creation date
+    filtered.sort((a, b) => {
+      if (a.date && !b.date) return -1;
+      if (!a.date && b.date) return 1;
+      return new Date(b.created_at) - new Date(a.created_at);
+    });
+    return { ...data, meetings: filtered, total: filtered.length };
+  },
   getMeeting: (meetingId) => request(`/api/meetings/${meetingId}`),
 };

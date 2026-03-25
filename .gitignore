@@ -46,3 +46,6 @@ docker/data/
 htmlcov/
 .coverage
 coverage.xml
+
+# Google OAuth tokens (contains secrets)
+.google_tokens.json

@@ -382,7 +382,12 @@ class LLMService:
             self._providers[1] = openai_provider
             self._fallback_provider = anthropic_provider
         elif preferred == "ollama":
-            # Ollama as primary, cloud providers as fallback
+            # Ollama as primary (tier 1), cloud providers as fallback
+            ollama = OllamaProvider(
+                base_url=self.settings.OLLAMA_BASE_URL,
+                model=self.settings.LLM_SELFHOSTED_MODEL,
+            )
+            self._providers[1] = ollama
             self._fallback_provider = anthropic_provider or openai_provider
         elif anthropic_provider:
             # Default: Anthropic primary
@@ -395,6 +400,7 @@ class LLMService:
         else:
             self._fallback_provider = None
 
+        # Always register Ollama on tier 3 as well (for explicit tier 3 requests)
         self._providers[3] = OllamaProvider(
             base_url=self.settings.OLLAMA_BASE_URL,
             model=self.settings.LLM_SELFHOSTED_MODEL,

@@ -2,7 +2,7 @@
 import { useState, useRef } from 'react';
 import Header from '../../components/Header';
 import { api } from '../../lib/api';
-import { Sparkles, Loader2, CheckCircle2, Users, Lightbulb, ListChecks, Clock, Check, ChevronDown, ChevronRight, Quote, Upload, ClipboardPaste, FileUp } from 'lucide-react';
+import { Sparkles, Loader2, CheckCircle2, Users, Lightbulb, ListChecks, Clock, Check, ChevronDown, ChevronRight, Quote, Upload, ClipboardPaste, FileUp, Download } from 'lucide-react';
 
 const SAMPLE = `Alice: Good morning everyone. Welcome to our Q2 planning meeting.
 Bob: Thanks Alice. I have the revenue numbers ready to present.
@@ -61,6 +61,22 @@ export default function QuickPage() {
 
   const handleDrop = (e) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) analyzeFile(f); };
   const reset = () => { setResult(null); setText(''); setError(null); };
+
+  const handleDownload = async (format) => {
+    if (!result?.meeting_id) return;
+    try {
+      const resp = await fetch(`http://localhost:8000/api/meetings/${result.meeting_id}/minutes?format=${format}`, { method: 'POST' });
+      if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);
+      const blob = await resp.blob();
+      const ext = format === 'docx' ? 'docx' : 'pdf';
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `quick_analysis.${ext}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { setError(`Download failed: ${e.message}`); }
+  };
 
   if (loading) {
     return (
@@ -147,6 +163,17 @@ export default function QuickPage() {
                   <span className="text-xl font-bold text-txt">{v}</span>
                 </div>
               ))}
+            </div>
+            {/* Export buttons */}
+            <div className="flex items-center gap-2">
+              <button onClick={() => handleDownload('docx')}
+                className="px-3.5 py-1.5 bg-bgcard text-txt rounded-lg text-xs font-semibold border border-bdr hover:bg-bghover transition-all inline-flex items-center gap-1.5">
+                <Download className="w-3.5 h-3.5" /> Save as Word
+              </button>
+              <button onClick={() => handleDownload('pdf')}
+                className="px-3.5 py-1.5 bg-bgcard text-txt rounded-lg text-xs font-semibold border border-bdr hover:bg-bghover transition-all inline-flex items-center gap-1.5">
+                <Download className="w-3.5 h-3.5" /> Save as PDF
+              </button>
             </div>
             {result.summary?.text && <Section title="Executive Summary" icon={Sparkles}><p className="font-serif text-[15px] leading-[1.75] text-txtsec whitespace-pre-line">{result.summary.text}</p></Section>}
             {result.decisions?.length > 0 && (

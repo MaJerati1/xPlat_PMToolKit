@@ -12,7 +12,8 @@ git clone https://github.com/your-org/meeting-toolkit.git
 cd meeting-toolkit
 cp .env.example .env
 
-# 2. Start all services
+# 2. Build and start all services
+docker compose build
 docker compose up -d
 
 # 3. Open the app

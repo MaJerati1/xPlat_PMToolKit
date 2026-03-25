@@ -77,8 +77,9 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U toolkit -d meeting_toolkit"]
       interval: 5s
-      timeout: 3s
-      retries: 5
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   # ---- Redis ----
   redis:

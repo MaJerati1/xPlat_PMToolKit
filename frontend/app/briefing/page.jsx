@@ -39,7 +39,7 @@ export default function BriefingPage() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    api.listMeetings(1, 50).then(data => {
+    api.listNamedMeetings(1, 50).then(data => {
       setMeetings(data.meetings || []);
     }).catch(() => {});
   }, []);

@@ -5,7 +5,7 @@ import { api } from '../../lib/api';
 import {
   Sparkles, Upload, ClipboardPaste, Loader2, Check, X, ChevronDown,
   ChevronRight, Users, Lightbulb, ListChecks, Clock, RotateCcw,
-  AlertCircle, FileUp, Quote,
+  AlertCircle, FileUp, Quote, Download as DownloadIcon,
 } from 'lucide-react';
 
 const SAMPLE = `Alice: Good morning everyone. Welcome to our Q2 planning meeting.
@@ -170,6 +170,22 @@ export default function AnalyzePage() {
   };
 
   const startOver = () => { setStep('input'); setText(''); setMeetingId(null); setAnalysis(null); setItems([]); setError(null); };
+
+  const handleDownload = async (format) => {
+    if (!meetingId) return;
+    try {
+      const resp = await fetch(`http://localhost:8000/api/meetings/${meetingId}/minutes?format=${format}`, { method: 'POST' });
+      if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);
+      const blob = await resp.blob();
+      const ext = format === 'docx' ? 'docx' : 'pdf';
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `transcript_analysis_${meetingId.slice(0,8)}.${ext}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { setError(`Download failed: ${e.message}`); }
+  };
   const handleDrop = useCallback((e) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) handleAnalyze({ type: 'file', file: f }); }, []);
   const sn = step === 'input' ? 1 : step === 'processing' ? 2 : 3;
 
@@ -317,6 +333,14 @@ export default function AnalyzePage() {
             )}
 
             <div className="flex justify-center gap-3 pt-2">
+              <button onClick={() => handleDownload('docx')}
+                className="px-4 py-2 bg-acc text-white rounded-lg text-xs font-semibold hover:bg-acchov transition-all inline-flex items-center gap-1.5">
+                ↓ Save as Word
+              </button>
+              <button onClick={() => handleDownload('pdf')}
+                className="px-4 py-2 bg-acc text-white rounded-lg text-xs font-semibold hover:bg-acchov transition-all inline-flex items-center gap-1.5">
+                ↓ Save as PDF
+              </button>
               <button onClick={handleReanalyze} className="px-4 py-2 bg-bgcard text-txtsec rounded-lg border border-bdr text-xs font-medium hover:bg-bghover transition-all inline-flex items-center gap-1.5">
                 <RotateCcw className="w-3.5 h-3.5" /> Re-analyze
               </button>

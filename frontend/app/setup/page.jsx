@@ -24,6 +24,77 @@ function KeyInput({ label, value, onChange, placeholder, hint, status, statusDet
   );
 }
 
+function OllamaCard({ keys, setKey, statuses }) {
+  const [ollamaModels, setOllamaModels] = useState([]);
+  const [detecting, setDetecting] = useState(false);
+  const [ollamaConnected, setOllamaConnected] = useState(false);
+
+  const detectModels = async () => {
+    setDetecting(true);
+    try {
+      const resp = await fetch('http://localhost:8000/health/ollama-models');
+      const data = await resp.json();
+      setOllamaConnected(data.connected);
+      setOllamaModels(data.models || []);
+      if (data.models?.length > 0 && !keys.LLM_SELFHOSTED_MODEL) {
+        setKey('LLM_SELFHOSTED_MODEL', data.models[0].name);
+      }
+    } catch { setOllamaConnected(false); setOllamaModels([]); }
+    finally { setDetecting(false); }
+  };
+
+  return (
+    <div className="bg-bgcard rounded-xl border border-bdr shadow-sm p-6 mb-6">
+      <h3 className="text-sm font-semibold text-txt flex items-center gap-2 mb-1">
+        <Server className="w-4 h-4 text-txtsec" /> Self-Hosted LLM (Ollama)
+      </h3>
+      <p className="text-xs text-txttri mb-4">Optional — run AI analysis on your own hardware. No data leaves your network.</p>
+
+      <div className="space-y-4">
+        <KeyInput label="Ollama Server URL" value={keys.OLLAMA_BASE_URL} onChange={v => setKey('OLLAMA_BASE_URL', v)}
+          placeholder="http://localhost:11434" type="text"
+          status={statuses.OLLAMA_BASE_URL} statusDetail={statuses.OLLAMA_BASE_URL_detail}
+          hint="The URL of your running Ollama server" />
+
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-sm font-semibold text-txt">Model</label>
+            <button onClick={detectModels} disabled={detecting}
+              className="px-3 py-1 bg-bgelev border border-bdr rounded-lg text-xs font-medium text-txtsec hover:text-txt transition-all inline-flex items-center gap-1.5">
+              {detecting ? <><Loader2 className="w-3 h-3 animate-spin" /> Detecting...</> : 'Detect Models'}
+            </button>
+          </div>
+
+          {ollamaModels.length > 0 ? (
+            <select value={keys.LLM_SELFHOSTED_MODEL} onChange={e => setKey('LLM_SELFHOSTED_MODEL', e.target.value)}
+              className="w-full px-3.5 py-2.5 bg-bgcard border border-bdr rounded-lg text-sm text-txt focus:outline-none focus:ring-2 focus:ring-acc/20 focus:border-acc appearance-none cursor-pointer">
+              <option value="">Select a model...</option>
+              {ollamaModels.map(m => (
+                <option key={m.name} value={m.name}>
+                  {m.name}{m.size_gb ? ` (${m.size_gb} GB)` : ''}{m.parameter_size ? ` — ${m.parameter_size}` : ''}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input type="text" value={keys.LLM_SELFHOSTED_MODEL} onChange={e => setKey('LLM_SELFHOSTED_MODEL', e.target.value)}
+              placeholder="llama3.3:70b"
+              className="w-full px-3.5 py-2.5 bg-bgcard border border-bdr rounded-lg font-mono text-sm text-txt placeholder:text-txttri focus:outline-none focus:ring-2 focus:ring-acc/20 focus:border-acc" />
+          )}
+
+          {ollamaModels.length > 0 && (
+            <p className="text-xs text-grn mt-1 font-medium flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3" /> {ollamaModels.length} model(s) detected on server
+            </p>
+          )}
+          {!ollamaConnected && ollamaModels.length === 0 && !detecting && (
+            <p className="text-xs text-txttri mt-1">Click "Detect Models" after entering your server URL, or type a model name manually.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GoogleConnectionCard({ keys, setKey }) {
   const [googleStatus, setGoogleStatus] = useState(null);
   const [connecting, setConnecting] = useState(false);
@@ -157,10 +228,11 @@ export default function SetupPage() {
   const [tokenInput, setTokenInput] = useState('');
   const [generating, setGenerating] = useState(false);
 
-  const [keys, setKeys] = useState({ ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '', GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', OLLAMA_BASE_URL: '', LLM_PRIMARY_MODEL: '', LLM_BUDGET_MODEL: '', LLM_PREFERRED_PROVIDER: '' });
+  const [keys, setKeys] = useState({ ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '', GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', OLLAMA_BASE_URL: '', LLM_PRIMARY_MODEL: '', LLM_BUDGET_MODEL: '', LLM_SELFHOSTED_MODEL: '', LLM_PREFERRED_PROVIDER: '' });
   const [statuses, setStatuses] = useState({});
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [showTestResults, setShowTestResults] = useState(false);
   const [message, setMessage] = useState(null);
 
   // Check first-run status on mount
@@ -242,13 +314,14 @@ export default function SetupPage() {
 
   // Test keys
   const handleTest = async () => {
-    setTesting(true);
+    setTesting(true); setShowTestResults(false);
     try {
       const results = await api.testKeys(authToken);
       if (Array.isArray(results)) {
         const s = {};
         for (const r of results) { s[r.key] = r.status; if (r.detail) s[r.key + '_detail'] = r.detail; }
         setStatuses(s);
+        setShowTestResults(true);
       }
     } catch (e) {
       setMessage({ type: 'error', text: `Test failed: ${typeof e === 'string' ? e : (e?.message || JSON.stringify(e))}` });
@@ -443,11 +516,7 @@ export default function SetupPage() {
         <GoogleConnectionCard keys={keys} setKey={setKey} />
 
         {/* Ollama */}
-        <div className="bg-bgcard rounded-xl border border-bdr shadow-sm p-6 mb-6">
-          <h3 className="text-sm font-semibold text-txt flex items-center gap-2 mb-1"><Server className="w-4 h-4 text-txtsec" /> Self-Hosted LLM (Ollama)</h3>
-          <p className="text-xs text-txttri mb-5">Optional — for air-gapped Tier 3 processing.</p>
-          <KeyInput label="Ollama Base URL" value={keys.OLLAMA_BASE_URL} onChange={v=>setKey('OLLAMA_BASE_URL',v)} placeholder="http://localhost:11434" type="text" status={statuses.OLLAMA_BASE_URL} statusDetail={statuses.OLLAMA_BASE_URL_detail} />
-        </div>
+        <OllamaCard keys={keys} setKey={setKey} statuses={statuses} />
 
         {/* Message */}
         {message && (
@@ -465,6 +534,44 @@ export default function SetupPage() {
             Test Only
           </button>
         </div>
+
+        {/* Test Results Summary */}
+        {showTestResults && Object.keys(statuses).length > 0 && (
+          <div className="mt-4 bg-bgcard rounded-xl border border-bdr shadow-sm p-5">
+            <h4 className="text-sm font-semibold text-txt mb-3 flex items-center gap-2">
+              <Check className="w-4 h-4 text-acc" /> Connection Test Results
+            </h4>
+            <div className="space-y-2">
+              {[
+                { key: 'ANTHROPIC_API_KEY', label: 'Anthropic API' },
+                { key: 'OPENAI_API_KEY', label: 'OpenAI API' },
+                { key: 'OLLAMA_BASE_URL', label: 'Ollama Server' },
+                { key: 'GOOGLE_CLIENT_ID', label: 'Google OAuth' },
+              ].map(({ key, label }) => {
+                const st = statuses[key];
+                if (!st) return null;
+                return (
+                  <div key={key} className={`flex items-center justify-between p-2.5 rounded-lg ${
+                    st === 'valid' ? 'bg-grnsoft' : st === 'invalid' ? 'bg-redsoft' : 'bg-bgelev'
+                  }`}>
+                    <div className="flex items-center gap-2">
+                      {st === 'valid' ? <CheckCircle2 className="w-4 h-4 text-grn" /> : st === 'invalid' ? <XCircle className="w-4 h-4 text-red" /> : <Minus className="w-4 h-4 text-txttri" />}
+                      <span className="text-sm font-medium text-txt">{label}</span>
+                    </div>
+                    <div className="text-right">
+                      <span className={`text-xs font-semibold ${st === 'valid' ? 'text-grn' : st === 'invalid' ? 'text-red' : 'text-txttri'}`}>
+                        {st === 'valid' ? 'Connected' : st === 'invalid' ? 'Failed' : 'Not configured'}
+                      </span>
+                      {statuses[key + '_detail'] && (
+                        <p className="text-xs text-txttri mt-0.5">{statuses[key + '_detail']}</p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Help */}
         <div className="mt-8 p-5 rounded-xl bg-bgelev border border-bdr/50">
